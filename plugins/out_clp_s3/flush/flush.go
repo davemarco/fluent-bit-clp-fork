@@ -47,6 +47,45 @@ func File(data unsafe.Pointer, length int, tag string, config *config.S3Config) 
 			break
 		}
 
+		println("printing rec")
+		print(ret)
+		print("\n")
+
+		println("printing ts")
+		print(ts)
+		print("\n")
+
+		println("printing record")
+		print(record)
+		print("\n")
+
+		println("printing record as map")
+		for key, value := range record {
+			fmt.Println("Key:", key, "Value:", string(value.([]byte)))
+		}
+		print("\n")
+
+		println("printing individual record")
+		fmt.Printf("this is a record %s", record["log"])
+		print("\n")
+
+
+		println("printing if error")
+		_, ok := record["log Value"]
+		fmt.Printf("is there an error %t", ok)
+		print("\n")
+
+    fmt.Println("Keys of the map:")
+    for key := range record {
+        fmt.Println(key)
+    }
+
+		fmt.Println("Test go print:")
+		for k, v := range record {
+			_, err = fmt.Printf("\"%s\": %v, ", k, v)
+		}
+		print("\n")
+
 		var timestamp time.Time
 		switch t := ts.(type) {
 		case output.FLBTime:
@@ -64,7 +103,7 @@ func File(data unsafe.Pointer, length int, tag string, config *config.S3Config) 
 		utils.CheckPrint(err)
 
 		for k, v := range record {
-			_, err = f.WriteString(fmt.Sprintf("\"%s\": %v, ", k, v))
+			_, err = f.WriteString(fmt.Sprintf("\"%s\": %s, ", k, v))
 			utils.CheckPrint(err)
 		}
 
