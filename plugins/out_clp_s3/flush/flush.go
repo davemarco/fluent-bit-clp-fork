@@ -4,6 +4,7 @@
 package flush
 
 import (
+	"bytes"
 	"C"
 	"fmt"
 	"log"
@@ -17,8 +18,12 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/y-scope/clp-ffi-go/ffi"
 
-	"github.com/y-scope/fluent-bit-clp/config"
+	"github.com/y-scope/fluent-bit-clp/context"
 	"github.com/y-scope/fluent-bit-clp/decoder"
+	"github.com/y-scope/fluent-bit-clp/internal/constant"
+
+	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/aws/aws-sdk-go/aws"
 )
 
 // Flushes data to a file in IR format. Decode of msgpack based on [fluent-bit reference].
@@ -27,14 +32,14 @@ import (
 //   - data: msgpack data
 //   - length: Byte length
 //   - tag: fluent-bit tag
-//   - S3Config: Plugin configuration
+//   - S3Context: Plugin context
 //
 // Returns:
 //   - code: fluent-bit success code (OK, RETRY, ERROR)
 //   - err: Error if flush fails
 //
 // [fluent-bit reference]: https://github.com/fluent/fluent-bit-go/blob/a7a013e2473cdf62d7320822658d5816b3063758/examples/out_multiinstance/out.go#L41
-func File(data unsafe.Pointer, length int, tag string, config *config.S3Config) (int, error) {
+func File(data unsafe.Pointer, length int, tag string, ctx *context.S3Context) (int, error) {
 	// Buffer to store events from fluent-bit chunk.
 	var logEvents []ffi.LogEvent
 
@@ -48,7 +53,7 @@ func File(data unsafe.Pointer, length int, tag string, config *config.S3Config) 
 		}
 
 		timestamp := DecodeTs(ts)
-		msg, err := GetMessage(record, config)
+		msg, err := GetMessage(record, ctx.Config)
 		if err != nil {
 			err = fmt.Errorf("failed to get message from record: %w", err)
 			return output.FLB_ERROR, err
@@ -67,41 +72,41 @@ func File(data unsafe.Pointer, length int, tag string, config *config.S3Config) 
 		logEvents = append(logEvents, event)
 	}
 
-	// Create file for IR output.
-	f, err := CreateFile(config.Path, config.File)
-	if err != nil {
-		return output.FLB_RETRY, err
-	}
-	defer f.Close()
+	var buf bytes.Buffer
 
-	zstdEncoder, err := zstd.NewWriter(f)
+	code, err := EncodeEvents(buf,logEvents,length,ctx.Config.IREncoding,ctx.Config.TimeZone)
 	if err != nil {
-		err = fmt.Errorf("error opening zstd encoder: %w", err)
-		return output.FLB_RETRY, err
-	}
-	defer zstdEncoder.Close()
-
-	// IR buffer using bytes.Buffer. So it will dynamically adjust if undersized.
-	irWriter, err := OpenIRWriter(length, config.IREncoding, config.TimeZone)
-	if err != nil {
-		err = fmt.Errorf("error opening IR writer: %w", err)
-		return output.FLB_RETRY, err
+		stringCode := constant.FLBCodes[code]
+		err = fmt.Errorf("error encoding log events, forwarding %s to engine: %w", stringCode,err)
+		return code, err
 	}
 
-	err = EncodeIR(irWriter, logEvents)
+	currentTime := time.Now()
+
+	// Format the time as a string in RFC3339 format.
+	timeString := currentTime.Format(time.RFC3339)
+
+	fileWithTs := fmt.Sprintf("%s_%s.zst", ctx.Config.File, timeString)
+
+	fullFilePath := filepath.Join(ctx.Config.Path, fileWithTs)
+
+	// Upload the file to S3.
+	result, err := ctx.AWS.S3Uploader.Upload(&s3manager.UploadInput{
+		Bucket: aws.String(ctx.Config.S3Bucket),
+		Key:    aws.String(fullFilePath),
+		Body:   &buf,
+	})
+
 	if err != nil {
-		err = fmt.Errorf("error while encoding IR: %w", err)
+		err = fmt.Errorf("failed to upload file, %v", err)
 		return output.FLB_ERROR, err
 	}
 
-	// Write zstd compressed IR to file.
-	_, err = irWriter.CloseTo(zstdEncoder)
-	if err != nil {
-		err = fmt.Errorf("error writting IR to file: %w", err)
-		return output.FLB_RETRY, err
-	}
+	fmt.Printf("file uploaded to, %s\n", result.Location)
 
-	log.Printf("zstd compressed IR chunk written to %s", f.Name())
+	//log.Printf("zstd compressed IR chunk written to %s", f.Name())
+	log.Printf("zstd compressed IR chunk written to buf")
+	log.Printf("error encoding log events, error code %T",code)
 	return output.FLB_OK, nil
 }
 
@@ -140,7 +145,7 @@ func DecodeTs(ts interface{}) time.Time {
 // Returns:
 //   - msg: Retrieved message
 //   - err: Key not found, json.Marshal error
-func GetMessage(record map[interface{}]interface{}, config *config.S3Config) (interface{}, error) {
+func GetMessage(record map[interface{}]interface{}, config context.S3Config) (interface{}, error) {
 	var msg interface{}
 	var ok bool
 	var err error
@@ -205,4 +210,49 @@ func CreateFile(path string, file string) (*os.File, error) {
 		return nil, err
 	}
 	return f, nil
+}
+
+// Encodes slice containing log events into zstd compressed IR and writes to buffer.
+//
+// Parameters:
+//   - buf
+//   - logEvents: slice of log events
+//   - length: Byte length of fluent-bit msgpack chunk
+//	 - encoding: Type of IR to encode
+//	 - timezone: Time zone of the source producing the log events, so that local times (any time
+//	that is not a unix timestamp) are handled correctly
+//
+// Returns:
+//   - code: fluent-bit success code (OK, RETRY, ERROR)
+//   - err: error from zstd encoder, IR writer
+func EncodeEvents(buf bytes.Buffer, logEvents []ffi.LogEvent, length int, encoding string, timezone string) (int, error) {
+
+	zstdEncoder, err := zstd.NewWriter(&buf)
+	if err != nil {
+		err = fmt.Errorf("error opening zstd encoder: %w", err)
+		return output.FLB_RETRY, err
+	}
+	defer zstdEncoder.Close()
+
+	// IR buffer using bytes.Buffer. So it will dynamically adjust if undersized.
+	irWriter, err := OpenIRWriter(length, encoding, timezone)
+	if err != nil {
+		err = fmt.Errorf("error opening IR writer: %w", err)
+		return output.FLB_RETRY, err
+	}
+
+	err = EncodeIR(irWriter, logEvents)
+	if err != nil {
+		err = fmt.Errorf("error while encoding IR: %w", err)
+		return output.FLB_ERROR, err
+	}
+
+	// Write zstd compressed IR to buffer.
+	_, err = irWriter.CloseTo(zstdEncoder)
+	if err != nil {
+		err = fmt.Errorf("error writting IR to buf: %w", err)
+		return output.FLB_RETRY, err
+	}
+
+	return output.FLB_OK, nil
 }

@@ -40,12 +40,12 @@ func OpenIRWriter(size int, encoding string, timezone string) (*ir.Writer, error
 //
 // Parameters:
 //   - irWriter
-//   - eventBuffer: a slice of log events to be encoded
+//   - logEvents: a slice of log events
 //
 // Returns:
 //   - err: error if an event could not be written
-func EncodeIR(irWriter *ir.Writer, eventBuffer []ffi.LogEvent) error {
-	for _, event := range eventBuffer {
+func EncodeIR(irWriter *ir.Writer, logEvents []ffi.LogEvent) error {
+	for _, event := range logEvents {
 		_, err := irWriter.Write(event)
 		if err != nil {
 			err = fmt.Errorf("failed to encode event %v into ir: %w", event, err)

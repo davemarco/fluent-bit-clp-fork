@@ -1,7 +1,7 @@
-// Package implements loading of fluent-bit configuration file. Configuration is accessible by
-// output plugin and stored by fluent-bit engine.
+// Package implements loading of Fluent Bit configuration file. Configuration is accessible by
+// output plugin and stored by Fluent Bit engine.
 
-package config
+package context
 
 import (
 	"errors"
@@ -13,7 +13,7 @@ import (
 	"github.com/fluent/fluent-bit-go/output"
 )
 
-// Holds settings for S3 CLP plugin from user defined fluent-bit configuration file.
+// Holds settings for S3 CLP plugin from user defined Fluent Bit configuration file.
 type S3Config struct {
 	Id              string
 	Path            string
@@ -21,14 +21,15 @@ type S3Config struct {
 	UseSingleKey    bool
 	AllowMissingKey bool
 	SingleKey       string
-	IREncoding      string
 	TimeZone        string
+	IREncoding      string
+	S3Bucket        string
 }
 
 // Generates configuration struct containing user-defined settings.
 //
 // Parameters:
-//   - plugin: fluent-bit plugin reference
+//   - plugin: Fluent Bit plugin reference
 //
 // Returns:
 //   - S3Config: Configuration based on fluent-bit.conf
@@ -71,10 +72,13 @@ func (s *S3Config) New(plugin unsafe.Pointer) error {
 	// Allow nil, so no need to check error.
 	s.SingleKey, _ = getValueFLBConfig(plugin, "single_key")
 
+	s.TimeZone, err = getValueFLBConfig(plugin, "time_zone")
+	configErrors = append(configErrors, err)
+
 	s.IREncoding, err = getValueFLBConfig(plugin, "IR_encoding")
 	configErrors = append(configErrors, err)
 
-	s.TimeZone, err = getValueFLBConfig(plugin, "time_zone")
+	s.S3Bucket, err = getValueFLBConfig(plugin, "S3_Bucket")
 	configErrors = append(configErrors, err)
 
 	// Wrap all errors into one error before returning. Automically excludes nil errors.
@@ -85,7 +89,7 @@ func (s *S3Config) New(plugin unsafe.Pointer) error {
 // Retrieves individuals values from fluent-bit.conf.
 //
 // Parameters:
-//   - plugin: fluent-bit plugin reference
+//   - plugin: Fluent Bit plugin reference
 //   - configKey: Key from fluent-bit.conf
 //
 // Returns:
@@ -95,9 +99,9 @@ func getValueFLBConfig(plugin unsafe.Pointer, configKey string) (string, error) 
 	configValue := output.FLBPluginConfigKey(plugin, configKey)
 
 	if configValue == "" {
-		err := fmt.Errorf("%s is not defined in fluent-bit configuration", configKey)
+		err := fmt.Errorf("%s is not defined in Fluent Bit configuration", configKey)
 		return configValue, err
 	}
-	log.Printf("fluent-bit config key %s set to value %s", configKey, configValue)
+	log.Printf("Fluent Bit config key %s set to value %s", configKey, configValue)
 	return configValue, nil
 }
