@@ -6,6 +6,7 @@ package flush
 import (
 	"bytes"
 	"C"
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -18,12 +19,12 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/y-scope/clp-ffi-go/ffi"
 
-	"github.com/y-scope/fluent-bit-clp/context"
+	pluginCtx "github.com/y-scope/fluent-bit-clp/context"
 	"github.com/y-scope/fluent-bit-clp/decoder"
 	"github.com/y-scope/fluent-bit-clp/internal/constant"
 
-	"github.com/aws/aws-sdk-go/service/s3/s3manager"
-	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 // Flushes data to a file in IR format. Decode of msgpack based on [fluent-bit reference].
@@ -39,7 +40,7 @@ import (
 //   - err: Error if flush fails
 //
 // [fluent-bit reference]: https://github.com/fluent/fluent-bit-go/blob/a7a013e2473cdf62d7320822658d5816b3063758/examples/out_multiinstance/out.go#L41
-func File(data unsafe.Pointer, length int, tag string, ctx *context.S3Context) (int, error) {
+func File(data unsafe.Pointer, length int, tag string, ctx *pluginCtx.S3Context) (int, error) {
 	// Buffer to store events from fluent-bit chunk.
 	var logEvents []ffi.LogEvent
 
@@ -91,10 +92,12 @@ func File(data unsafe.Pointer, length int, tag string, ctx *context.S3Context) (
 	fullFilePath := filepath.Join(ctx.Config.Path, fileWithTs)
 
 	// Upload the file to S3.
-	result, err := ctx.AWS.S3Uploader.Upload(&s3manager.UploadInput{
+	tag = fmt.Sprintf("fluentBitTag=%s",tag)
+	result, err := ctx.S3Uploader.Upload(context.TODO(), &s3.PutObjectInput{
 		Bucket: aws.String(ctx.Config.S3Bucket),
 		Key:    aws.String(fullFilePath),
 		Body:   &buf,
+		Tagging: &tag,
 	})
 
 	if err != nil {
@@ -145,7 +148,7 @@ func DecodeTs(ts interface{}) time.Time {
 // Returns:
 //   - msg: Retrieved message
 //   - err: Key not found, json.Marshal error
-func GetMessage(record map[interface{}]interface{}, config context.S3Config) (interface{}, error) {
+func GetMessage(record map[interface{}]interface{}, config pluginCtx.S3Config) (interface{}, error) {
 	var msg interface{}
 	var ok bool
 	var err error
