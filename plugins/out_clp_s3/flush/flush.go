@@ -8,11 +8,12 @@ import (
 	"C"
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"time"
 	"unsafe"
+	"net/url"
+	"github.com/google/uuid"
 
 	"github.com/fluent/fluent-bit-go/output"
 	jsoniter "github.com/json-iterator/go"
@@ -86,9 +87,9 @@ func File(data unsafe.Pointer, length int, tag string, ctx *pluginCtx.S3Context)
 
 	// Format the time as a string in RFC3339 format.
 	timeString := currentTime.Format(time.RFC3339)
+	uuid := uuid.New()
 
-	fileWithTs := fmt.Sprintf("%s_%s.zst", ctx.Config.File, timeString)
-
+	fileWithTs := fmt.Sprintf("%s_%s_%s.zst", tag, timeString,uuid)
 	fullFilePath := filepath.Join(ctx.Config.Path, fileWithTs)
 
 	// Upload the file to S3.
@@ -105,11 +106,12 @@ func File(data unsafe.Pointer, length int, tag string, ctx *pluginCtx.S3Context)
 		return output.FLB_ERROR, err
 	}
 
-	fmt.Printf("file uploaded to, %s\n", result.Location)
+	url, err := url.QueryUnescape(result.Location)
+	if err != nil {
+		url = result.Location
+	}
 
-	//log.Printf("zstd compressed IR chunk written to %s", f.Name())
-	log.Printf("zstd compressed IR chunk written to buf")
-	log.Printf("error encoding log events, error code %T",code)
+	fmt.Printf("file uploaded to %s \n", url)
 	return output.FLB_OK, nil
 }
 

@@ -24,6 +24,8 @@ type S3Config struct {
 	TimeZone        string
 	IREncoding      string
 	S3Bucket        string
+	S3Region		string
+	RoleArn		string
 }
 
 // Generates configuration struct containing user-defined settings.
@@ -78,7 +80,13 @@ func (s *S3Config) New(plugin unsafe.Pointer) error {
 	s.IREncoding, err = getValueFLBConfig(plugin, "IR_encoding")
 	configErrors = append(configErrors, err)
 
-	s.S3Bucket, err = getValueFLBConfig(plugin, "S3_Bucket")
+	s.S3Bucket, err = getValueFLBConfig(plugin, "s3_bucket")
+	configErrors = append(configErrors, err)
+
+	s.S3Region, err = getValueFLBConfig(plugin, "s3_region")
+	configErrors = append(configErrors, err)
+
+	s.RoleArn, err = getValueFLBConfig(plugin, "role_arn")
 	configErrors = append(configErrors, err)
 
 	// Wrap all errors into one error before returning. Automically excludes nil errors.

@@ -14,6 +14,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.17.1
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.56.1
 	github.com/aws/aws-sdk-go-v2/service/sts v1.29.1
+	github.com/google/uuid v1.6.0
 	github.com/json-iterator/go v1.1.12
 	github.com/klauspost/compress v1.16.5
 	github.com/ugorji/go/codec v1.1.7
