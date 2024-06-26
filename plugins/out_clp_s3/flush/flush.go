@@ -13,7 +13,6 @@ import (
 	"time"
 	"unsafe"
 	"net/url"
-	"github.com/google/uuid"
 
 	"github.com/fluent/fluent-bit-go/output"
 	jsoniter "github.com/json-iterator/go"
@@ -85,12 +84,11 @@ func File(data unsafe.Pointer, length int, tag string, ctx *pluginCtx.S3Context)
 
 	currentTime := time.Now()
 
-	// Format the time as a string in RFC3339 format.
-	timeString := currentTime.Format(time.RFC3339)
-	uuid := uuid.New()
+	// Format the time as a string in RFC3339Nano format.
+	timeString := currentTime.Format(time.RFC3339Nano)
 
-	fileWithTs := fmt.Sprintf("%s_%s_%s.zst", tag, timeString,uuid)
-	fullFilePath := filepath.Join(ctx.Config.Path, fileWithTs)
+	fileName := fmt.Sprintf("%s_%s_%s.zst", tag, timeString, ctx.Config.Id)
+	fullFilePath := filepath.Join(ctx.Config.Path, fileName)
 
 	// Upload the file to S3.
 	tag = fmt.Sprintf("fluentBitTag=%s",tag)

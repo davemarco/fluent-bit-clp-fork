@@ -4,28 +4,41 @@
 package context
 
 import (
-	"errors"
-	"fmt"
-	"log"
-	"strconv"
+	"encoding/json"
 	"unsafe"
 
 	"github.com/fluent/fluent-bit-go/output"
+	"github.com/go-playground/validator/v10"
 )
 
 // Holds settings for S3 CLP plugin from user defined Fluent Bit configuration file.
 type S3Config struct {
-	Id              string
-	Path            string
-	File            string
-	UseSingleKey    bool
-	AllowMissingKey bool
-	SingleKey       string
-	TimeZone        string
-	IREncoding      string
-	S3Bucket        string
-	S3Region		string
-	RoleArn		string
+	Id              string `json:"id" validate:"required"`
+	Path            string `json:"path" validate:"required"`
+	File            string `json:"file" validate:"required"`
+	UseSingleKey    bool   `json:"use_single_key,string" validate:"required"`
+	AllowMissingKey bool   `json:"allow_missing_key,string" validate:"required"`
+	SingleKey       string `json:"single_key" validate:"required"`
+	TimeZone        string `json:"time_zone" validate:"required"`
+	IREncoding      string `json:"IR_encoding" validate:"required"`
+	S3Bucket        string `json:"s3_bucket" validate:"required"`
+	S3Region        string `json:"s3_region," validate:"required"`
+	RoleArn         string `json:"role_arn" validate:"required"`
+}
+
+// Keys to set configuration values in fluent-bit.conf. Keys are presented to user in README. 
+var configKeys = []string{
+	"id",
+	"path",
+	"file",
+	"use_single_key",
+	"allow_missing_key",
+	"single_key",
+	"time_zone",
+	"IR_encoding",
+	"s3_bucket",
+	"s3_region",
+	"role_arn",
 }
 
 // Generates configuration struct containing user-defined settings.
@@ -35,81 +48,31 @@ type S3Config struct {
 //
 // Returns:
 //   - S3Config: Configuration based on fluent-bit.conf
-//   - err: All errors in config wrapped
+//   - err: Validation errors, encoding/json errors
 func (s *S3Config) New(plugin unsafe.Pointer) error {
-	// TODO: Redo validation using validator. Validator will simplify warning for IR_encoding if
-	// a non-existing encoding is supplied.
-	// https://pkg.go.dev/github.com/go-playground/validator/v10
 
-	// Slice holds config errors allowing function to return all errors at once instead of
-	// one at a time. User can fix all errors at once.
-	configErrors := []error{}
-
-	var err error
-	s.Id, err = getValueFLBConfig(plugin, "id")
-	configErrors = append(configErrors, err)
-
-	s.Path, err = getValueFLBConfig(plugin, "path")
-	configErrors = append(configErrors, err)
-
-	s.File, err = getValueFLBConfig(plugin, "file")
-	configErrors = append(configErrors, err)
-
-	var UseSingleKey string
-	UseSingleKey, err = getValueFLBConfig(plugin, "use_single_key")
-	configErrors = append(configErrors, err)
-
-	// Type conversion to bool.
-	s.UseSingleKey, err = strconv.ParseBool(UseSingleKey)
-	configErrors = append(configErrors, err)
-
-	var AllowMissingKey string
-	AllowMissingKey, err = getValueFLBConfig(plugin, "allow_missing_key")
-	configErrors = append(configErrors, err)
-
-	// Type conversion to bool.
-	s.AllowMissingKey, err = strconv.ParseBool(AllowMissingKey)
-	configErrors = append(configErrors, err)
-
-	// Allow nil, so no need to check error.
-	s.SingleKey, _ = getValueFLBConfig(plugin, "single_key")
-
-	s.TimeZone, err = getValueFLBConfig(plugin, "time_zone")
-	configErrors = append(configErrors, err)
-
-	s.IREncoding, err = getValueFLBConfig(plugin, "IR_encoding")
-	configErrors = append(configErrors, err)
-
-	s.S3Bucket, err = getValueFLBConfig(plugin, "s3_bucket")
-	configErrors = append(configErrors, err)
-
-	s.S3Region, err = getValueFLBConfig(plugin, "s3_region")
-	configErrors = append(configErrors, err)
-
-	s.RoleArn, err = getValueFLBConfig(plugin, "role_arn")
-	configErrors = append(configErrors, err)
-
-	// Wrap all errors into one error before returning. Automically excludes nil errors.
-	err = errors.Join(configErrors...)
-	return err
-}
-
-// Retrieves individuals values from fluent-bit.conf.
-//
-// Parameters:
-//   - plugin: Fluent Bit plugin reference
-//   - configKey: Key from fluent-bit.conf
-//
-// Returns:
-//   - configValue
-//   - err: Error if config value is blank
-func getValueFLBConfig(plugin unsafe.Pointer, configKey string) (string, error) {
-	configValue := output.FLBPluginConfigKey(plugin, configKey)
-
-	if configValue == "" {
-		err := fmt.Errorf("%s is not defined in Fluent Bit configuration", configKey)
-		return configValue, err
+	var userInput = make(map[string]string)
+	// Load user input into map
+	for _, key := range configKeys {
+		userInput[key] = output.FLBPluginConfigKey(plugin, key)
 	}
-	log.Printf("Fluent Bit config key %s set to value %s", configKey, configValue)
-	return configValue, nil
+
+	// Convert map to JSON
+	JsonUserInput, err := json.Marshal(userInput)
+	if err != nil {
+		return err
+	}
+
+	// Unmarshal JSON directly into s
+	if err := json.Unmarshal(configJSON, s); err != nil {
+		return err
+	}
+
+	// Validate using validator package
+	validate := validator.New(validator.WithRequiredStructEnabled())
+	if err := validate.Struct(s); err != nil {
+		return err
+	}
+
+	return nil
 }
