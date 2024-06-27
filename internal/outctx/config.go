@@ -20,8 +20,8 @@ import (
 // Holds settings for S3 CLP plugin from user defined Fluent Bit configuration file.
 type S3Config struct {
 	Id              string `conf:"id" validate:"-" `
-	UseSingleKey    string `conf:"use_single_key" validate:"boolean"`
-	AllowMissingKey string `conf:"allow_missing_key" validate:"boolean"`
+	UseSingleKey    bool `conf:"use_single_key" validate:"boolean"`
+	AllowMissingKey bool `conf:"allow_missing_key" validate:"boolean"`
 	SingleKey       string `conf:"time_zone" validate:"required_if=use_single_key true"`
 	TimeZone        string `conf:"time_zone" validate:"timezone"`
 	S3Bucket        string `conf:"s3_bucket" validate:"required"`
@@ -82,40 +82,42 @@ func NewS3(plugin unsafe.Pointer) (*S3Config, error) {
 	// https://pkg.go.dev/github.com/go-playground/validator/v10
 
  	var err error
-	userInput := S3Config{
+	config := S3Config{
 		Id:              uuid.New().String(),
-		UseSingleKey:    "true",
-		AllowMissingKey: "true",
+		UseSingleKey:    true,
+		AllowMissingKey: true,
 		SingleKey:       "log",
 	}
 
 	var pluginOptions = map[string]interface{}{
-		"id":                &userInput.Id,
-		"use_single_key":    &userInput.UseSingleKey,
-		"allow_missing_key": &userInput.AllowMissingKey,
-		"single_key":        &userInput.SingleKey,
-		"time_zone":         &userInput.TimeZone,
-		"s3_bucket":         &userInput.S3Bucket,
-		"s3_bucket_prefix":  &userInput.S3BucketPrefix,
-		"s3_region":         &userInput.S3Region,
-		"role_arn":          &userInput.RoleArn,
+		"id":                &config.Id,
+		"use_single_key":    &config.UseSingleKey,
+		"allow_missing_key": &config.AllowMissingKey,
+		"single_key":        &config.SingleKey,
+		"time_zone":         &config.TimeZone,
+		"s3_bucket":         &config.S3Bucket,
+		"s3_bucket_prefix":  &config.S3BucketPrefix,
+		"s3_region":         &config.S3Region,
+		"role_arn":          &config.RoleArn,
 	}
 
 	// Retrieve values defined in fluent-bit.conf. Function supplied by Fluent Bit retrieves all
 	// values as strings. If the option is not defined by user, it is set to "".
 	for key, userValue := range pluginOptions {
 		value := output.FLBPluginConfigKey(plugin, key)
-		switch uv := userValue.(type) {
-		case *string:
-			*uv = value
-		case *bool:
-			boolValue, err := strconv.ParseBool(value)
-			if err != nil {
-				return nil, fmt.Errorf("error could not parse value %v into bool", value)
+		if value != "" {
+			switch uv := userValue.(type) {
+			case *string:
+				*uv = value
+			case *bool:
+				boolValue, err := strconv.ParseBool(value)
+				if err != nil {
+					return nil, fmt.Errorf("error could not parse value %v into bool", value)
+				}
+				*uv = boolValue
+			default:
+				return nil, fmt.Errorf("unable to parse type %T", userValue)
 			}
-			*uv = boolValue
-		default:
-			return nil, fmt.Errorf("unable to parse type %T", userValue)
 		}
 	}
 	/*
@@ -152,7 +154,7 @@ func NewS3(plugin unsafe.Pointer) (*S3Config, error) {
 		return name
 	})
 
-	err = validate.Struct(&userInput)
+	err = validate.Struct(&config)
 
 	configErrors := []error{}
 
@@ -166,29 +168,6 @@ func NewS3(plugin unsafe.Pointer) (*S3Config, error) {
 		}
 		err = errors.Join(configErrors...)
 		return nil, err
-	}
-
-	// Type conversion to bool.
-	useSingleKey, err := strconv.ParseBool(userInput.UseSingleKey)
-	if err != nil {
-		return nil, err
-	}
-
-	allowMissingKey, err := strconv.ParseBool(userInput.AllowMissingKey)
-	if err != nil {
-		return nil, err
-	}
-
-	config := S3Config{
-		Id:              userInput.Id,
-		UseSingleKey:    useSingleKey,
-		AllowMissingKey: allowMissingKey,
-		SingleKey:       userInput.SingleKey,
-		TimeZone:        userInput.TimeZone,
-		S3Bucket:        userInput.S3Bucket,
-		S3BucketPrefix:  userInput.S3BucketPrefix,
-		S3Region:        userInput.S3Region,
-		RoleArn:         userInput.RoleArn,
 	}
 
 	return &config, err
