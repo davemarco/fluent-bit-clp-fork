@@ -11,7 +11,6 @@ import (
 	"unsafe"
 	"strings"
 
-
 	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
 
@@ -20,18 +19,25 @@ import (
 
 // Holds settings for S3 CLP plugin from user defined Fluent Bit configuration file.
 type S3Config struct {
-	Id              string
-	UseSingleKey    bool
-	AllowMissingKey bool
-	SingleKey       string
-	TimeZone        string
-	S3Bucket        string
-	S3BucketPrefix  string
-	S3Region        string
-	RoleArn         string
+	Id              string `conf:"id" validate:"-" `
+	UseSingleKey    string `conf:"use_single_key" validate:"boolean"`
+	AllowMissingKey string `conf:"allow_missing_key" validate:"boolean"`
+	SingleKey       string `conf:"time_zone" validate:"required_if=use_single_key true"`
+	TimeZone        string `conf:"time_zone" validate:"timezone"`
+	S3Bucket        string `conf:"s3_bucket" validate:"required"`
+	S3BucketPrefix  string `conf:"s3_bucket_prefix" validate:"dirpath"`
+	S3Region        string `conf:"time_zone" validate:"required"`
+	RoleArn         string `conf:"role_arn" validate:"omitempty,startswith=arn:aws:iam"`
 }
 
-// Holds settings for S3 CLP plugin from user defined Fluent Bit configuration file.
+
+// Holds user input provided in the config. [S3Config] cannot be used since it holds bool
+// types and [output.FLBPluginConfigKey] can only import strings. The "conf" struct tags 
+// are the plugin options described to user in README. These struct tags allow user 
+// to see snake case "use_single_key" vs. camel case "SingleKey" in the error message. 
+// Map keys are the plugin options described to user in README. The "validate" struct tags are 
+// rules to be consumed by [validator]. The functionality of each rule can be found in docs for 
+// [validator].
 type S3UserInput struct {
 	Id              string `conf:"id" validate:"-" `
 	UseSingleKey    string `conf:"use_single_key" validate:"boolean"`
@@ -75,16 +81,15 @@ func NewS3(plugin unsafe.Pointer) (*S3Config, error) {
 	// TODO: Redo validation to simplify configuration error reporting.
 	// https://pkg.go.dev/github.com/go-playground/validator/v10
 
-	userInput := S3UserInput{
+ 	var err error
+	userInput := S3Config{
 		Id:              uuid.New().String(),
 		UseSingleKey:    "true",
 		AllowMissingKey: "true",
 		SingleKey:       "log",
 	}
-	var err error
 
-	/*
-	var pluginOptions = map[string]*string{
+	var pluginOptions = map[string]interface{}{
 		"id":                &userInput.Id,
 		"use_single_key":    &userInput.UseSingleKey,
 		"allow_missing_key": &userInput.AllowMissingKey,
@@ -99,21 +104,21 @@ func NewS3(plugin unsafe.Pointer) (*S3Config, error) {
 	// Retrieve values defined in fluent-bit.conf. Function supplied by Fluent Bit retrieves all
 	// values as strings. If the option is not defined by user, it is set to "".
 	for key, userValue := range pluginOptions {
-		*userValue = output.FLBPluginConfigKey(plugin, key)
-	}
-	*/
-
-	val := reflect.ValueOf(userInput).Elem()
-
-	for i := 0; i < val.NumField(); i++ {
-		field := val.Type().Field(i)
-		tag := field.Tag.Get("conf")
-		value := output.FLBPluginConfigKey(plugin, tag)
-		if value != "" {
-			val.Field(i).SetString(value)
+		value := output.FLBPluginConfigKey(plugin, key)
+		switch uv := userValue.(type) {
+		case *string:
+			*uv = value
+		case *bool:
+			boolValue, err := strconv.ParseBool(value)
+			if err != nil {
+				return nil, fmt.Errorf("error could not parse value %v into bool", value)
+			}
+			*uv = boolValue
+		default:
+			return nil, fmt.Errorf("unable to parse type %T", userValue)
 		}
 	}
-
+	/*
 	// Define default values for optional settings. Setting defaults before validation simplifies
 	// validation settings, and ensures that default settings are also validated.
 	defaultConfig := map[string]string{
@@ -134,6 +139,7 @@ func NewS3(plugin unsafe.Pointer) (*S3Config, error) {
 			}
 		}
 	}
+	*/
 
 	validate := validator.New(validator.WithRequiredStructEnabled())
 
