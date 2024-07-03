@@ -90,7 +90,6 @@ func ToS3(data unsafe.Pointer, length int, tag string, ctx *outctx.S3Context) (i
 			err = fmt.Errorf("error opening zstd writer: %w", err)
 			return output.FLB_RETRY, err
 		}
-		defer tagState.Buffer.ZstdWriter.Close()
 
 		// IR buffer using bytes.Buffer internally, so it will dynamically grow if undersized. Using
 		// FourByteEncoding as default encoding.
@@ -114,6 +113,8 @@ func ToS3(data unsafe.Pointer, length int, tag string, ctx *outctx.S3Context) (i
 		return output.FLB_RETRY, err
 	}
 
+	tagState.Buffer.ZstdWriter.Close()
+
 	outputLocation, err := uploadToS3(
 		ctx.Config.S3Bucket,
 		ctx.Config.S3BucketPrefix,
@@ -128,10 +129,8 @@ func ToS3(data unsafe.Pointer, length int, tag string, ctx *outctx.S3Context) (i
 	}
 
 	//delete buffers
-	
-
-
-
+	//should check if all closed, but believe they are 
+	tagState.Buffer = nil;
 
 	log.Printf("chunk uploaded to %s", outputLocation)
 	return output.FLB_OK, nil
