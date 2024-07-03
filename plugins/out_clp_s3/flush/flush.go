@@ -76,32 +76,39 @@ func ToS3(data unsafe.Pointer, length int, tag string, ctx *outctx.S3Context) (i
 		}
 		logEvents = append(logEvents, event)
 	}
-
+	var err error
 	var buf bytes.Buffer
+	var tagState outctx.TagState
 
-	zstdWriter, err := zstd.NewWriter(&buf)
-	if err != nil {
-		err = fmt.Errorf("error opening zstd writer: %w", err)
-		return output.FLB_RETRY, err
+	tagState, ok := ctx.Tags[tag]
+	if !ok {
+		ctx.Tags[tag] = tagState
 	}
-	defer zstdWriter.Close()
+	if tagState.Buffer == nil {
+		tagState.Buffer.ZstdWriter, err = zstd.NewWriter(&buf)
+		if err != nil {
+			err = fmt.Errorf("error opening zstd writer: %w", err)
+			return output.FLB_RETRY, err
+		}
+		defer tagState.Buffer.ZstdWriter.Close()
 
-	// IR buffer using bytes.Buffer internally, so it will dynamically grow if undersized. Using
-	// FourByteEncoding as default encoding.
-	irWriter, err := ir.NewWriterSize[ir.FourByteEncoding](length, ctx.Config.TimeZone)
-	if err != nil {
-		err = fmt.Errorf("error opening IR writer: %w", err)
-		return output.FLB_RETRY, err
+		// IR buffer using bytes.Buffer internally, so it will dynamically grow if undersized. Using
+		// FourByteEncoding as default encoding.
+		tagState.Buffer.IrWriter, err = ir.NewWriterSize[ir.FourByteEncoding](length, ctx.Config.TimeZone)
+		if err != nil {
+			err = fmt.Errorf("error opening IR writer: %w", err)
+			return output.FLB_RETRY, err
+		}
 	}
-
-	err = writeIr(irWriter, logEvents)
+	//else continue
+	err = writeIr(tagState.Buffer.IrWriter, logEvents)
 	if err != nil {
 		err = fmt.Errorf("error while encoding IR: %w", err)
 		return output.FLB_ERROR, err
 	}
 
 	// Write zstd compressed IR to file.
-	_, err = irWriter.CloseTo(zstdWriter)
+	_, err = tagState.Buffer.IrWriter.CloseTo(tagState.Buffer.ZstdWriter)
 	if err != nil {
 		err = fmt.Errorf("error writting IR to buf: %w", err)
 		return output.FLB_RETRY, err
@@ -119,6 +126,12 @@ func ToS3(data unsafe.Pointer, length int, tag string, ctx *outctx.S3Context) (i
 		err = fmt.Errorf("failed to upload chunk to s3, %w", err)
 		return output.FLB_RETRY, err
 	}
+
+	//delete buffers
+	
+
+
+
 
 	log.Printf("chunk uploaded to %s", outputLocation)
 	return output.FLB_OK, nil
