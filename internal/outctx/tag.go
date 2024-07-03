@@ -1,19 +1,20 @@
 package outctx
 
 import (
-	"os"
+	"io"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/y-scope/clp-ffi-go/ir"
 )
 
-type TagState struct {
+type TagContext struct {
+	Name string
 	Index   int
-	Buffer  *TagBuffer
+	Io  *TagIo
 }
 
-type TagBuffer struct {
-	File    os.File
+type TagIo struct {
+	Buf    io.Writer
 	IrWriter *ir.Writer
 	ZstdWriter *zstd.Encoder
 }

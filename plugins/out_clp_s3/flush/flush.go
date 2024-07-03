@@ -10,11 +10,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/url"
 	"path/filepath"
 	"time"
 	"unsafe"
+
+	"os"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
@@ -76,16 +77,34 @@ func ToS3(data unsafe.Pointer, length int, tag string, ctx *outctx.S3Context) (i
 		}
 		logEvents = append(logEvents, event)
 	}
+
 	var err error
 	var buf bytes.Buffer
-	var tagState outctx.TagState
+	var tagCtx *outctx.TagContext
 
-	tagState, ok := ctx.Tags[tag]
+	tagCtx, ok := ctx.Tags[tag]
+
+	// if tag is missing, create a new tag
 	if !ok {
-		ctx.Tags[tag] = tagState
+		tagCtx = &outctx.TagContext{Name: tag}
+		ctx.Tags[tag] = tagCtx
 	}
-	if tagState.Buffer == nil {
-		tagState.Buffer.ZstdWriter, err = zstd.NewWriter(&buf)
+
+	// check if io is valid
+	if tagCtx.Io == nil {
+		tagCtx.Io = &outctx.TagIo{}
+
+		//replace with buffer use
+		if true {
+			tagCtx.Io.Buf , err = createFile(ctx.Config.BufferDir,tag)
+				if err != nil {
+		return output.FLB_RETRY, err
+	}
+		} else {
+			tagCtx.Io.Buf = &buf
+		}
+
+		tagCtx.Io.ZstdWriter, err = zstd.NewWriter(tagCtx.Io.Buf)
 		if err != nil {
 			err = fmt.Errorf("error opening zstd writer: %w", err)
 			return output.FLB_RETRY, err
@@ -93,28 +112,32 @@ func ToS3(data unsafe.Pointer, length int, tag string, ctx *outctx.S3Context) (i
 
 		// IR buffer using bytes.Buffer internally, so it will dynamically grow if undersized. Using
 		// FourByteEncoding as default encoding.
-		tagState.Buffer.IrWriter, err = ir.NewWriterSize[ir.FourByteEncoding](length, ctx.Config.TimeZone)
+		tagCtx.Io.IrWriter, err = ir.NewWriterSize[ir.FourByteEncoding](length, ctx.Config.TimeZone)
 		if err != nil {
 			err = fmt.Errorf("error opening IR writer: %w", err)
 			return output.FLB_RETRY, err
 		}
 	}
+
 	//else continue
-	err = writeIr(tagState.Buffer.IrWriter, logEvents)
+	err = writeIr(tagCtx.Io.IrWriter, logEvents)
 	if err != nil {
 		err = fmt.Errorf("error while encoding IR: %w", err)
 		return output.FLB_ERROR, err
 	}
 
 	// Write zstd compressed IR to file.
-	_, err = tagState.Buffer.IrWriter.CloseTo(tagState.Buffer.ZstdWriter)
+	_, err = tagCtx.Io.IrWriter.WriteTo(tagCtx.Io.ZstdWriter)
 	if err != nil {
 		err = fmt.Errorf("error writting IR to buf: %w", err)
 		return output.FLB_RETRY, err
 	}
 
-	tagState.Buffer.ZstdWriter.Close()
+	// says not to use this. But we need this to flush on every try
+	// maybe can remove later.
+	tagCtx.Io.ZstdWriter.Flush()
 
+	/*
 	outputLocation, err := uploadToS3(
 		ctx.Config.S3Bucket,
 		ctx.Config.S3BucketPrefix,
@@ -127,12 +150,13 @@ func ToS3(data unsafe.Pointer, length int, tag string, ctx *outctx.S3Context) (i
 		err = fmt.Errorf("failed to upload chunk to s3, %w", err)
 		return output.FLB_RETRY, err
 	}
+	*/
 
 	//delete buffers
-	//should check if all closed, but believe they are 
-	tagState.Buffer = nil;
+	//should check if all closed, but believe they are
+	//tagCtx.Io = nil;
 
-	log.Printf("chunk uploaded to %s", outputLocation)
+	//log.Printf("chunk uploaded to %s", outputLocation)
 	return output.FLB_OK, nil
 }
 
@@ -270,3 +294,73 @@ func uploadToS3(
 
 	return uploadLocation, nil
 }
+
+// Creates a new file to output IR. A new file is created for every Fluent Bit chunk.
+// The system timestamp is added as a suffix.
+//
+// Parameters:
+//   - path: Directory path to create to write files inside
+//   - file: File name prefix
+//
+// Returns:
+//   - f: The created file
+//   - err: Could not create directory, could not create file
+func createFile(path string, file string) (*os.File, error) {
+	// Make directory if does not exist.
+	err := os.MkdirAll(path, 0o751)
+	if err != nil {
+		err = fmt.Errorf("failed to create directory %s: %w", path, err)
+		return nil, err
+	}
+
+	currentTime := time.Now()
+
+	// Format the time as a string in RFC3339 format.
+	timeString := currentTime.Format(time.RFC3339)
+
+	fileWithTs := fmt.Sprintf("%s_%s.zst", file, timeString)
+
+	fullFilePath := filepath.Join(path, fileWithTs)
+
+	// If the file doesn't exist, create it.
+	f, err := os.OpenFile(fullFilePath, os.O_WRONLY|os.O_CREATE, 0o751)
+	if err != nil {
+		err = fmt.Errorf("failed to create file %s: %w", fullFilePath, err)
+		return nil, err
+	}
+	return f, nil
+}
+
+func newIo(tagCtx *outctx.TagContext, config outctx.S3Config) (error) {
+	tagCtx.Io = &outctx.TagIo{}
+	var err error
+
+	//replace with buffer use
+	if true {
+		tagCtx.Io.Buf , err = createFile(config.BufferDir,tagCtx.Name)
+			if err != nil {
+	return output.FLB_RETRY, err
+}
+	} else {
+		tagCtx.Io.Buf = &buf
+	}
+
+	tagCtx.Io.ZstdWriter, err = zstd.NewWriter(tagCtx.Io.Buf)
+	if err != nil {
+		err = fmt.Errorf("error opening zstd writer: %w", err)
+		return output.FLB_RETRY, err
+	}
+
+	// IR buffer using bytes.Buffer internally, so it will dynamically grow if undersized. Using
+	// FourByteEncoding as default encoding.
+	tagCtx.Io.IrWriter, err = ir.NewWriterSize[ir.FourByteEncoding](length, ctx.Config.TimeZone)
+	if err != nil {
+		err = fmt.Errorf("error opening IR writer: %w", err)
+		return output.FLB_RETRY, err
+	}
+}
+
+
+
+
+

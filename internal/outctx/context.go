@@ -29,7 +29,7 @@ const (
 type S3Context struct {
 	Config   S3Config
 	Uploader *manager.Uploader
-	Tags map[string]TagState
+	Tags map[string]*TagContext
 }
 
 // Creates a new context. Loads configuration from user. Loads and tests aws credentials.
@@ -95,7 +95,7 @@ func NewS3Context(plugin unsafe.Pointer) (*S3Context, error) {
 	ctx := S3Context{
 		Config:   *config,
 		Uploader: uploader,
-		Tags: make(map[string]TagState),
+		Tags: make(map[string]*TagContext),
 	}
 
 	return &ctx, nil
