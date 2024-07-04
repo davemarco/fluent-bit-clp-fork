@@ -28,6 +28,8 @@ type S3Config struct {
 	UseSingleKey    bool   `conf:"use_single_key"    validate:"-"`
 	AllowMissingKey bool   `conf:"allow_missing_key" validate:"-"`
 	SingleKey       string `conf:"single_key"        validate:"required_if=use_single_key true"`
+	Store           bool   `conf:"store"             validate:"-"`
+	StoreDir        string `conf:"store_dir"         validate:"dirpath"`
 	TimeZone        string `conf:"time_zone"         validate:"timezone"`
 }
 
@@ -52,6 +54,8 @@ func NewS3Config(plugin unsafe.Pointer) (*S3Config, error) {
 		UseSingleKey:    true,
 		AllowMissingKey: true,
 		SingleKey:       "log",
+		Store:            false,
+		StoreDir:        "tmp/out_clp_s3/",
 		TimeZone:        "America/Toronto",
 	}
 
@@ -66,6 +70,8 @@ func NewS3Config(plugin unsafe.Pointer) (*S3Config, error) {
 		"use_single_key":    &config.UseSingleKey,
 		"allow_missing_key": &config.AllowMissingKey,
 		"single_key":        &config.SingleKey,
+		"store":   	         &config.Store,
+		"store_dir":   	     &config.StoreDir,
 		"time_zone":         &config.TimeZone,
 	}
 

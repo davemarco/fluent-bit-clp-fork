@@ -16,22 +16,28 @@ import (
 	"time"
 	"unsafe"
 
+	"os"
+	"io/fs"
+	"errors"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/fluent/fluent-bit-go/output"
-	"github.com/klauspost/compress/zstd"
 
 	"github.com/y-scope/clp-ffi-go/ffi"
 	"github.com/y-scope/clp-ffi-go/ir"
 
 	"github.com/y-scope/fluent-bit-clp/internal/decoder"
+	"github.com/y-scope/fluent-bit-clp/internal/irzstd"
 	"github.com/y-scope/fluent-bit-clp/internal/outctx"
 )
 
 // Tag key when tagging s3 objects with Fluent Bit tag.
 const s3TagKey = "fluentBitTag"
+//const sizeThreshold = 5*1024*1024
+const sizeThreshold = 500
 
 // Flushes data to s3 in IR format. Decode of Msgpack based on [Fluent Bit reference].
 //
@@ -46,7 +52,7 @@ const s3TagKey = "fluentBitTag"
 //   - err: Error if flush fails
 //
 // [Fluent Bit reference]: https://github.com/fluent/fluent-bit-go/blob/a7a013e2473cdf62d7320822658d5816b3063758/examples/out_multiinstance/out.go#L41
-func ToS3(data unsafe.Pointer, length int, tag string, ctx *outctx.S3Context) (int, error) {
+func ToS3(data unsafe.Pointer, length int, tagKey string, ctx *outctx.S3Context) (int, error) {
 	// Buffer to store events from Fluent Bit chunk.
 	var logEvents []ffi.LogEvent
 
@@ -77,54 +83,84 @@ func ToS3(data unsafe.Pointer, length int, tag string, ctx *outctx.S3Context) (i
 		logEvents = append(logEvents, event)
 	}
 
-	var buf bytes.Buffer
+	var err error
+	tag, ok := ctx.Tags[tagKey]
 
-	zstdWriter, err := zstd.NewWriter(&buf)
-	if err != nil {
-		err = fmt.Errorf("error opening zstd writer: %w", err)
-		return output.FLB_RETRY, err
+	// If tag has not been encountered before, create a new tag.
+	if !ok {
+		tag = &outctx.Tag{Key: tagKey}
+		ctx.Tags[tagKey] = tag
 	}
 
-	// IR buffer using bytes.Buffer internally, so it will dynamically grow if undersized. Using
-	// FourByteEncoding as default encoding.
-	irWriter, err := ir.NewWriterSize[ir.FourByteEncoding](length, ctx.Config.TimeZone)
-	if err != nil {
-		err = fmt.Errorf("error opening IR writer: %w", err)
-		return output.FLB_RETRY, err
+	// Check if store exists. This can occur if new tag, or store was reset after upload.
+	if tag.Store == nil {
+		if ctx.Config.Store {
+			file, err := createFile(ctx.Config.StoreDir,tag.Key)
+			tag.Store = file
+			if err != nil {
+				return output.FLB_RETRY, fmt.Errorf("error creating file: %w", err)
+			}
+			log.Printf("created file %s", file.Name())
+		} else {
+			var membuf bytes.Buffer
+			tag.Store = &membuf
+		}
 	}
 
-	err = writeIr(irWriter, logEvents)
-	if err != nil {
-		err = fmt.Errorf("error while encoding IR: %w", err)
-		return output.FLB_ERROR, err
+	// Check if writer exists. This can occur if new tag, or writer was deleted after upload.
+	// Easier to not reuse writer since we need new IR preamble for every upload.
+	if tag.Writer == nil {
+		tag.Writer, err = irzstd.NewIrZstdWriter(tag.Store,ctx.Config.TimeZone,length)
+		if err != nil {
+			return output.FLB_RETRY, fmt.Errorf("error opening irzstd writer: %w", err)
+		}
 	}
 
-	// Write zstd compressed IR to file.
-	_, err = irWriter.CloseTo(zstdWriter)
+	code, err := tag.Writer.WriteIrZstd(logEvents)
 	if err != nil {
-		err = fmt.Errorf("error writting IR to buf: %w", err)
-		return output.FLB_RETRY, err
+		return code, err
+	}
+	fmt.Printf("%d \n",tag.Writer.TotalBytes)
+
+	if !ctx.Config.Store || tag.Writer.TotalBytes > sizeThreshold  {
+
+		err = tag.Writer.Close()
+		if err != nil {
+			return code, fmt.Errorf("error closing irzstd writer: %w",err)
+		}
+		tag.Writer = nil;
+
+		/*
+		outputLocation, err := uploadToS3(
+			ctx.Config.S3Bucket,
+			ctx.Config.S3BucketPrefix,
+			&buf,
+			tag,
+			ctx.Config.Id,
+			ctx.Uploader,
+		)
+		if err != nil {
+			err = fmt.Errorf("failed to upload chunk to s3, %w", err)
+			return output.FLB_RETRY, err
+		}
+		log.Printf("chunk uploaded to %s", outputLocation)
+		*/
+
+		if ctx.Config.Store {
+			file := tag.Store.(*os.File)
+			fileName := file.Name()
+			err = os.Remove(fileName)
+			if err != nil {
+				return output.FLB_ERROR, fmt.Errorf("failed to delete file %s", fileName)
+			}
+			log.Printf("deleted file %s", file.Name())
+			tag.Store = nil
+		} else {
+			buf := tag.Store.(*bytes.Buffer)
+			buf.Reset()
+		}
 	}
 
-	err = zstdWriter.Close()
-	if err != nil {
-		return output.FLB_RETRY, err
-	}
-
-	outputLocation, err := uploadToS3(
-		ctx.Config.S3Bucket,
-		ctx.Config.S3BucketPrefix,
-		&buf,
-		tag,
-		ctx.Config.Id,
-		ctx.Uploader,
-	)
-	if err != nil {
-		err = fmt.Errorf("failed to upload chunk to s3, %w", err)
-		return output.FLB_RETRY, err
-	}
-
-	log.Printf("chunk uploaded to %s", outputLocation)
 	return output.FLB_OK, nil
 }
 
@@ -261,4 +297,37 @@ func uploadToS3(
 	}
 
 	return uploadLocation, nil
+}
+
+// Creates a new file to output IR. A new file is created for every Fluent Bit chunk.
+// The system timestamp is added as a suffix.
+//
+// Parameters:
+//   - path: Directory path to create to write files inside
+//   - file: File name prefix
+//
+// Returns:
+//   - f: The created file
+//   - err: Could not create directory, could not create file
+func createFile(path string, file string) (*os.File, error) {
+	// Make directory if does not exist.
+	err := os.MkdirAll(path, 0o751)
+	if err != nil {
+		err = fmt.Errorf("failed to create directory %s: %w", path, err)
+		return nil, err
+	}
+
+	fullFilePath := filepath.Join(path, file)
+
+    // Try to open the file exclusively. If it already exists something has gone wrong. Even if
+	// program crashed should have been deleted on startup.
+    f, err := os.OpenFile(fullFilePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o751)
+    if err != nil {
+        // Check if the error is due to the file already existing
+        if errors.Is(err, fs.ErrExist) {
+            return nil, fmt.Errorf("file %s already exists", fullFilePath)
+        }
+        return nil, fmt.Errorf("failed to create file %s: %w", fullFilePath, err)
+    }
+	return f, nil
 }
