@@ -20,17 +20,17 @@ import (
 // "validate" struct tags are rules to be consumed by [validator]. The functionality of each rule
 // can be found in docs for [validator].
 type S3Config struct {
-	S3Region        string `conf:"time_zone"         validate:"required"`
+	S3Region        string `conf:"s3_region"         validate:"required"`
 	S3Bucket        string `conf:"s3_bucket"         validate:"required"`
 	S3BucketPrefix  string `conf:"s3_bucket_prefix"  validate:"dirpath"`
 	RoleArn         string `conf:"role_arn"          validate:"omitempty,startswith=arn:aws:iam"`
 	Id              string `conf:"id"                validate:"required"`
 	UseSingleKey    bool   `conf:"use_single_key"    validate:"-"`
 	AllowMissingKey bool   `conf:"allow_missing_key" validate:"-"`
-	SingleKey       string `conf:"time_zone"         validate:"required_if=use_single_key true"`
+	SingleKey       string `conf:"single_key"        validate:"required_if=use_single_key true"`
 	TimeZone        string `conf:"time_zone"         validate:"timezone"`
-	Buffer          string 
-	BufferDir       string `conf:"Buffer_dir"        validate:"dirpath"`
+	Store           bool   `conf:"store"             validate:"-"`
+	StoreDir       string `conf:"store_dir"          validate:"dirpath"`
 }
 
 // Generates configuration struct containing user-defined settings. In addition, sets default values
@@ -55,7 +55,8 @@ func NewS3Config(plugin unsafe.Pointer) (*S3Config, error) {
 		AllowMissingKey: true,
 		SingleKey:       "log",
 		TimeZone:        "America/Toronto",
-		BufferDir:       "tmp/out_clp_s3/",
+		Store:           false,
+		StoreDir:        "tmp/out_clp_s3/",
 	}
 
 	// Map used to loop over user inputs saving a [output.FLBPluginConfigKey] call for each key.
@@ -70,7 +71,8 @@ func NewS3Config(plugin unsafe.Pointer) (*S3Config, error) {
 		"allow_missing_key": &config.AllowMissingKey,
 		"single_key":        &config.SingleKey,
 		"time_zone":         &config.TimeZone,
-		"buffer_dir":   	 &config.BufferDir,
+		"store":   	         &config.Store,
+		"store_dir":   	     &config.StoreDir,
 	}
 
 	for settingName, untypedField := range pluginSettings {
