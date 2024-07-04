@@ -51,11 +51,14 @@ func FLBPluginInit(plugin unsafe.Pointer) int {
 	}
 
 	log.Printf("[%s] Init called for id: %s", s3PluginName, outCtx.Config.Id)
+<<<<<<< HEAD
 
 	err = flush.RecoverOnStart(outCtx)
 	if err != nil {
 		log.Fatalf("Failed to recover logs stored on disk: %s", err)
 	}
+=======
+>>>>>>> 7c3ce5f (Upload batches of records to S3 instead of writing to file; Upgrade input validation using Go validator package. (#4))
 
 	// Set the context for this instance so that params can be retrieved during flush.
 	output.FLBPluginSetContext(plugin, outCtx)

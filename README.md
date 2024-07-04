@@ -1,7 +1,8 @@
 # Fluent Bit output plugins for CLP
 
 Repository contains Fluent Bit output plugins that store records in CLP's compressed IR
-(intermediate representation) format. More details on IR can be found in this [Uber Engineering Blog][1].
+(intermediate representation) format. More details on IR can be found in this
+[Uber Engineering Blog][1].
 
 The general flow is as follows:
 

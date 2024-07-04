@@ -303,3 +303,51 @@ func FlushZstdToS3(tag *outctx.Tag, ctx *outctx.S3Context) (error) {
 
 		return nil
 }
+
+// Uploads log events to s3.
+//
+// Parameters:
+//   - bucket: S3 bucket
+//   - bucketPrefix: Directory prefix in s3
+//   - io: Chunk of compressed IR
+//   - tag: Fluent Bit tag
+//   - id: Id of output plugin
+//   - uploader: AWS s3 upload manager
+//
+// Returns:
+//   - err: error uploading, error unescaping string
+func uploadToS3(
+	bucket string,
+	bucketPrefix string,
+	io io.ReadWriter,
+	tag string,
+	id string,
+	uploader *manager.Uploader,
+) (string, error) {
+	currentTime := time.Now()
+	// Format the time as a string in RFC3339Nano format.
+	timeString := currentTime.Format(time.RFC3339Nano)
+
+	fileName := fmt.Sprintf("%s_%s_%s.zst", tag, timeString, id)
+	fullFilePath := filepath.Join(bucketPrefix, fileName)
+
+	// Upload the file to S3.
+	tag = fmt.Sprintf("%s=%s", s3TagKey, tag)
+	result, err := uploader.Upload(context.TODO(), &s3.PutObjectInput{
+		Bucket:  aws.String(bucket),
+		Key:     aws.String(fullFilePath),
+		Body:    io,
+		Tagging: &tag,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	// Result location is less readable when escaped.
+	uploadLocation, err := url.QueryUnescape(result.Location)
+	if err != nil {
+		return "", err
+	}
+
+	return uploadLocation, nil
+}
