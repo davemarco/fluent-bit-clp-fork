@@ -8,8 +8,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"unsafe"
 	"io"
+	"time"
+	"unsafe"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
@@ -38,7 +39,8 @@ type S3Context struct {
 type Tag struct {
 	Key string
 	Index   int
-	Store  io.Writer
+	Start time.Time
+	Store  io.ReadWriter
 	Writer *irzstd.IrZstdWriter
 }
 

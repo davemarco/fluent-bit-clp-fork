@@ -108,12 +108,21 @@ func FLBPluginExitCtx(ctx unsafe.Pointer) int {
 	p := output.FLBPluginGetContext(ctx)
 	// Type assert context back into the original type for the Go variable.
 
-	config, ok := p.(*outctx.S3Config)
+	outCtx, ok := p.(*outctx.S3Context)
 	if !ok {
 		log.Fatal("Could not read context during flush")
 	}
 
-	log.Printf("[%s] Exit called for id: %s", s3PluginName, config.Id)
+	log.Printf("[%s] Exit called for id: %s", s3PluginName, outCtx.Config.Id)
+
+	/*
+	err := flush.CloseAll(outCtx)
+	if err != nil {
+		log.Printf("error closing tag resources during exit")
+		return output.FLB_ERROR
+	}
+	*/
+
 	return output.FLB_OK
 }
 

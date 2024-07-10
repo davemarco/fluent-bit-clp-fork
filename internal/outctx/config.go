@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 	"unsafe"
 
 	"github.com/go-playground/validator/v10"
@@ -30,7 +31,9 @@ type S3Config struct {
 	SingleKey       string `conf:"single_key"        validate:"required_if=use_single_key true"`
 	TimeZone        string `conf:"time_zone"         validate:"timezone"`
 	Store           bool   `conf:"store"             validate:"-"`
-	StoreDir       string `conf:"store_dir"          validate:"dirpath"`
+	StoreDir        string `conf:"store_dir"         validate:"dirpath"`
+	Timeout         time.Duration `conf:"timeout"    validate:"-"`
+	UploadSizeMb    int `conf:"upload_size_mb"       validate:"gt=2,lt=1000"`
 }
 
 // Generates configuration struct containing user-defined settings. In addition, sets default values
@@ -43,6 +46,9 @@ type S3Config struct {
 //   - S3Config: Configuration based on fluent-bit.conf
 //   - err: All validation errors in config wrapped, parse bool error
 func NewS3Config(plugin unsafe.Pointer) (*S3Config, error) {
+	//defaultTimeout, _ := time.ParseDuration("10m")
+	defaultTimeout, _ := time.ParseDuration("30s")
+
 	// Define default values for settings. Setting defaults before validation simplifies validation
 	// configuration, and ensures that default settings are also validated.
 	config := S3Config{
@@ -57,6 +63,8 @@ func NewS3Config(plugin unsafe.Pointer) (*S3Config, error) {
 		TimeZone:        "America/Toronto",
 		Store:           false,
 		StoreDir:        "tmp/out_clp_s3/",
+		Timeout:         defaultTimeout,
+		UploadSizeMb:    10,
 	}
 
 	// Map used to loop over user inputs saving a [output.FLBPluginConfigKey] call for each key.
@@ -73,6 +81,8 @@ func NewS3Config(plugin unsafe.Pointer) (*S3Config, error) {
 		"time_zone":         &config.TimeZone,
 		"store":   	         &config.Store,
 		"store_dir":   	     &config.StoreDir,
+		"timeout":   	     &config.Timeout,
+		"upload_size_mb":    &config.UploadSizeMb,
 	}
 
 	for settingName, untypedField := range pluginSettings {
@@ -97,10 +107,21 @@ func NewS3Config(plugin unsafe.Pointer) (*S3Config, error) {
 				return nil, fmt.Errorf("error could not parse input %v into bool", userInput)
 			}
 			*configField = boolInput
+		case *time.Duration:
+			durationInput, err :=  time.ParseDuration(userInput)
+			if err != nil {
+				return nil, fmt.Errorf("error could not parse input %v into duration", userInput)
+			}
+			*configField = durationInput
+		case *int:
+			intInput, err :=  strconv.Atoi(userInput)
+			if err != nil {
+				return nil, fmt.Errorf("error could not parse input %v into int", userInput)
+			}
+			*configField = intInput
 		default:
 			return nil, fmt.Errorf("unable to parse type %T", untypedField)
 		}
-
 	}
 
 	validate := validator.New(validator.WithRequiredStructEnabled())

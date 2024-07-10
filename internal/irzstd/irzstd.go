@@ -12,12 +12,26 @@ import (
 	"github.com/y-scope/clp-ffi-go/ffi"
 )
 
+// Converts log events into Zstd compressed IR. Effectively chains [ir.Writer] then [zstd.Encoder] in series.
+// Compressed IR output is [io.Writer] provided to [zstd.Encoder].
 type IrZstdWriter struct {
-	TotalBytes int64
+	TotalBytes int
 	IrWriter *ir.Writer
 	ZstdWriter *zstd.Encoder
 }
 
+// Creates a new irZstdWriter
+//
+// Parameters:
+//   - writer: Msgpack data
+//   - length: Byte length
+//   - tag: Fluent Bit tag
+//   - S3Config: Plugin configuration
+//
+// Returns:
+//   - code: Fluent Bit success code (OK, RETRY, ERROR)
+//   - err: Error if flush fails
+//
 func NewIrZstdWriter(writer io.Writer, timezone string, size int) (*IrZstdWriter, error) {
 	zstdWriter, err := zstd.NewWriter(writer)
 	if err != nil {
@@ -52,17 +66,18 @@ func (w *IrZstdWriter) WriteIrZstd(logEvents []ffi.LogEvent) (int, error) {
 
 	// Increment total bytes written.
 	// TODO: Improve error handling for partially written bytes.
-	w.TotalBytes += numBytes
+	w.TotalBytes += int(numBytes)
 	if err != nil {
 		return output.FLB_RETRY, err
 	}
 
 	// Flush zstd writer to store. Calling flush may reduce performance, but in case where store is
 	// file, preferable to actually write to file instead of keeping in memory.
-	err = w.ZstdWriter.Flush()
-	if err != nil {
-		return output.FLB_RETRY, err
-	}
+	//err = w.ZstdWriter.Flush()
+	//err = w.ZstdWriter.Close()
+	//if err != nil {
+	//	return output.FLB_RETRY, err
+	//}
 
 	return output.FLB_OK, nil
 }
@@ -101,10 +116,3 @@ func writeIr(irWriter *ir.Writer, eventBuffer []ffi.LogEvent) error {
 	}
 	return nil
 }
-
-
-
-
-
-//irwriter already has internal writer.
-//
