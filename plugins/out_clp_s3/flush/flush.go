@@ -15,10 +15,8 @@ import (
 	"time"
 	"unsafe"
 
-	"os"
-	"io/fs"
-	"errors"
 	"log"
+	"os"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
@@ -36,8 +34,12 @@ import (
 
 // Tag key when tagging s3 objects with Fluent Bit tag.
 const s3TagKey = "fluentBitTag"
-//const sizeThreshold = 5*1024*1024
+
+// const sizeThreshold = 5*1024*1024
 const sizeThreshold = 500
+
+const IrDir = "ir"
+const ZstdDir = "zstd"
 
 // Flushes data to s3 in IR format. Decode of Msgpack based on [Fluent Bit reference].
 //
@@ -88,76 +90,36 @@ func ToS3(data unsafe.Pointer, length int, tagKey string, ctx *outctx.S3Context)
 
 	// If tag has not been encountered before, create a new tag.
 	if !ok {
-		tag = &outctx.Tag{Key: tagKey}
-		ctx.Tags[tagKey] = tag
-	}
-
-	// Check if store exists. This can occur if new tag, or store was reset after upload.
-	if tag.Store == nil {
-		if ctx.Config.Store {
-			file, err := createFile(ctx.Config.StoreDir,tag.Key)
-			tag.Store = file
-			if err != nil {
-				return output.FLB_RETRY, fmt.Errorf("error creating file: %w", err)
-			}
-			log.Printf("created file %s", file.Name())
-		} else {
-			var membuf bytes.Buffer
-			tag.Store = &membuf
-		}
-	}
-
-	// Check if writer exists. This can occur if new tag, or writer was deleted after upload.
-	// Easier to not reuse writer since we need new IR preamble for every upload.
-	if tag.Writer == nil {
-		tag.Writer, err = irzstd.NewIrZstdWriter(tag.Store,ctx.Config.TimeZone,length)
+		irStore,zstdStore,err := newStores(ctx.Config.Store,ctx.Config.StoreDir,tagKey)
 		if err != nil {
-			return output.FLB_RETRY, fmt.Errorf("error opening irzstd writer: %w", err)
+			return output.FLB_RETRY, fmt.Errorf("error creating stores: %w", err)
 		}
+
+		tag, err = newTag(tagKey,length,ctx,irStore,zstdStore)
+		if err != nil {
+			return output.FLB_RETRY, fmt.Errorf("error creating tag: %w", err)
+		}
+		ctx.Tags[tagKey] = tag
 	}
 
 	code, err := tag.Writer.WriteIrZstd(logEvents)
 	if err != nil {
 		return code, err
 	}
-	fmt.Printf("%d \n",tag.Writer.TotalBytes)
 
-	if !ctx.Config.Store || tag.Writer.TotalBytes > sizeThreshold  {
+	storeSize, err := tag.Writer.GetZstdStoreSize()
+	if err != nil {
+		// Do not retry since logs already written to store.
+		return output.FLB_ERROR, fmt.Errorf("error could not get size of zstd store: %w", err)
+	}
 
-		err = tag.Writer.Close()
+	UploadSize := ctx.Config.UploadSizeMb << 20
+	bestBefore := tag.Start.Add(ctx.Config.Timeout)
+
+	if !ctx.Config.Store || storeSize >= UploadSize || time.Now().After(bestBefore) {
+		err := FlushZstdToS3(tag,ctx)
 		if err != nil {
-			return code, fmt.Errorf("error closing irzstd writer: %w",err)
-		}
-		tag.Writer = nil;
-
-		/*
-		outputLocation, err := uploadToS3(
-			ctx.Config.S3Bucket,
-			ctx.Config.S3BucketPrefix,
-			&buf,
-			tag,
-			ctx.Config.Id,
-			ctx.Uploader,
-		)
-		if err != nil {
-			err = fmt.Errorf("failed to upload chunk to s3, %w", err)
-			return output.FLB_RETRY, err
-		}
-		log.Printf("chunk uploaded to %s", outputLocation)
-		*/
-
-		if ctx.Config.Store {
-			file := tag.Store.(*os.File)
-			fileName := file.Name()
-			err = os.Remove(fileName)
-			if err != nil {
-				return output.FLB_ERROR, fmt.Errorf("failed to delete file %s", fileName)
-			}
-			log.Printf("deleted file %s", file.Name())
-			tag.Store = nil
-		} else {
-			buf := tag.Store.(*bytes.Buffer)
-			buf.Reset()
+			return output.FLB_ERROR, fmt.Errorf("error flushing zstdStore to s3: %w", err)
 		}
 	}
 
@@ -267,19 +229,20 @@ func uploadToS3(
 	bucket string,
 	bucketPrefix string,
 	io io.ReadWriter,
-	tag string,
+	tagKey string,
+	index int,
 	id string,
 	uploader *manager.Uploader,
 ) (string, error) {
 	currentTime := time.Now()
-	// Format the time as a string in RFC3339Nano format.
-	timeString := currentTime.Format(time.RFC3339Nano)
+	// Format the time as a string in RFC3339 format.
+	timeString := currentTime.Format(time.RFC3339)
 
-	fileName := fmt.Sprintf("%s_%s_%s.zst", tag, timeString, id)
+	fileName := fmt.Sprintf("%s_%d_%s_%s.zst", tagKey, timeString, id)
 	fullFilePath := filepath.Join(bucketPrefix, fileName)
 
 	// Upload the file to S3.
-	tag = fmt.Sprintf("%s=%s", s3TagKey, tag)
+	tag := fmt.Sprintf("%s=%s", s3TagKey, tagKey)
 	result, err := uploader.Upload(context.TODO(), &s3.PutObjectInput{
 		Bucket:  aws.String(bucket),
 		Key:     aws.String(fullFilePath),
@@ -299,6 +262,55 @@ func uploadToS3(
 	return uploadLocation, nil
 }
 
+func newTag(tagKey string, size int, ctx *outctx.S3Context, irStore io.ReadWriter, zstdStore io.ReadWriter) (*outctx.Tag, error) {
+	writer, err := irzstd.NewIrZstdWriter(ctx.Config.TimeZone, size, ctx.Config.Store,irStore,zstdStore)
+	if err != nil {
+		return nil, err
+	}
+
+	tag := outctx.Tag{
+		Key: tagKey,
+		Start: time.Now(),
+		Writer: writer,
+	}
+	return &tag, nil
+}
+
+func newStores(store bool,storeDir string,tagkey string,) (io.ReadWriter,io.ReadWriter, error) {
+	var irStore io.ReadWriter
+	var zstdStore io.ReadWriter
+
+	if store {
+		// Create file to store ir to disk.
+		irStoreName := fmt.Sprintf("%s.ir", tagkey)
+		irStoreDir := filepath.Join(storeDir, IrDir)
+		irFile, err := CreateFile(irStoreDir, irStoreName)
+		if err != nil {
+			return nil, nil, fmt.Errorf("error creating file: %w", err)
+		}
+		log.Printf("created file %s", irFile.Name())
+		irStore = irFile
+
+		// Create file to store zstd to disk.
+		zstdStoreName := fmt.Sprintf("%s.zst", tagkey)
+		zstdStoreDir := filepath.Join(storeDir, ZstdDir)
+		zstdFile, err := CreateFile(zstdStoreDir, zstdStoreName)
+		if err != nil {
+			return nil, nil, fmt.Errorf("error creating file: %w", err)
+		}
+		log.Printf("created file %s", zstdFile.Name())
+		zstdStore = zstdFile
+
+	} else {
+		// Store zstd directly in memory. No ir file needed since ir is immediately compressed.
+		irStore = nil
+		var membuf bytes.Buffer
+		zstdStore = &membuf
+	}
+
+	return irStore, zstdStore, nil
+}
+
 // Creates a new file to output IR. A new file is created for every Fluent Bit chunk.
 // The system timestamp is added as a suffix.
 //
@@ -309,7 +321,7 @@ func uploadToS3(
 // Returns:
 //   - f: The created file
 //   - err: Could not create directory, could not create file
-func createFile(path string, file string) (*os.File, error) {
+func CreateFile(path string, file string) (*os.File, error) {
 	// Make directory if does not exist.
 	err := os.MkdirAll(path, 0o751)
 	if err != nil {
@@ -319,17 +331,42 @@ func createFile(path string, file string) (*os.File, error) {
 
 	fullFilePath := filepath.Join(path, file)
 
-    // Try to open the file exclusively. If it already exists something has gone wrong. Even if
+	// Try to open the file exclusively. If it already exists something has gone wrong. Even if
 	// program crashed should have been deleted on startup.
-    f, err := os.OpenFile(fullFilePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o751)
-    if err != nil {
-        // Check if the error is due to the file already existing
-        if errors.Is(err, fs.ErrExist) {
-            return nil, fmt.Errorf("file %s already exists", fullFilePath)
-        }
-        return nil, fmt.Errorf("failed to create file %s: %w", fullFilePath, err)
-    }
+	f, err := os.OpenFile(fullFilePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o751)
+	if err != nil {
+		// Check if the error is due to the file already existing
+		if errors.Is(err, fs.ErrExist) {
+			return nil, fmt.Errorf("file %s already exists", fullFilePath)
+		}
+		return nil, fmt.Errorf("failed to create file %s: %w", fullFilePath, err)
+	}
 	return f, nil
 }
 
+func FlushZstdToS3(tag *outctx.Tag, ctx *outctx.S3Context) (error) {
+		// Adds null byte to terminate stream.
+		err := tag.Writer.EndStream()
+		if err != nil {
+			return fmt.Errorf("error closing irzstd stream: %w", err)
+		}
 
+		outputLocation, err := uploadToS3(
+			ctx.Config.S3Bucket,
+			ctx.Config.S3BucketPrefix,
+			tag.Writer.ZstdStore,
+			tag.Key,
+			tag.Index,
+			ctx.Config.Id,
+			ctx.Uploader,
+		)
+		if err != nil {
+			err = fmt.Errorf("failed to upload chunk to s3, %w", err)
+			return err
+		}
+
+		log.Printf("chunk uploaded to %s", outputLocation)
+		tag.Writer.Reset()
+
+		return nil
+}

@@ -64,7 +64,7 @@ func NewS3Config(plugin unsafe.Pointer) (*S3Config, error) {
 		Store:           false,
 		StoreDir:        "tmp/out_clp_s3/",
 		Timeout:         defaultTimeout,
-		UploadSizeMb:    10,
+		UploadSizeMb:    16,
 	}
 
 	// Map used to loop over user inputs saving a [output.FLBPluginConfigKey] call for each key.

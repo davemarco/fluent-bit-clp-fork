@@ -40,7 +40,8 @@ type Tag struct {
 	Key string
 	Index   int
 	Start time.Time
-	Store  io.ReadWriter
+	IrStore  io.ReadWriter
+	ZstdStore  io.ReadWriter
 	Writer *irzstd.IrZstdWriter
 }
 
