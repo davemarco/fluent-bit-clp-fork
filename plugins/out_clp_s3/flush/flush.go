@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"path/filepath"
 	"time"
@@ -37,9 +38,6 @@ const s3TagKey = "fluentBitTag"
 
 // const sizeThreshold = 5*1024*1024
 const sizeThreshold = 500
-
-const IrDir = "ir"
-const ZstdDir = "zstd"
 
 // Flushes data to s3 in IR format. Decode of Msgpack based on [Fluent Bit reference].
 //
@@ -90,21 +88,21 @@ func ToS3(data unsafe.Pointer, length int, tagKey string, ctx *outctx.S3Context)
 
 	// If tag has not been encountered before, create a new tag.
 	if !ok {
-		irStore,zstdStore,err := newStores(ctx.Config.Store,ctx.Config.StoreDir,tagKey)
+		irStore, zstdStore, err := irzstd.NewStores(ctx.Config.Store,ctx.Config.StoreDir,tagKey)
 		if err != nil {
 			return output.FLB_RETRY, fmt.Errorf("error creating stores: %w", err)
 		}
 
-		tag, err = newTag(tagKey,length,ctx,irStore,zstdStore)
+		tag, err = newTag(tagKey,ctx.Config.TimeZone,length,ctx.Config.Store, irStore, zstdStore)
 		if err != nil {
 			return output.FLB_RETRY, fmt.Errorf("error creating tag: %w", err)
 		}
 		ctx.Tags[tagKey] = tag
 	}
 
-	code, err := tag.Writer.WriteIrZstd(logEvents)
+	err = tag.Writer.WriteIrZstd(logEvents)
 	if err != nil {
-		return code, err
+		return output.FLB_ERROR, err
 	}
 
 	storeSize, err := tag.Writer.GetZstdStoreSize()
@@ -262,8 +260,8 @@ func uploadToS3(
 	return uploadLocation, nil
 }
 
-func newTag(tagKey string, size int, ctx *outctx.S3Context, irStore io.ReadWriter, zstdStore io.ReadWriter) (*outctx.Tag, error) {
-	writer, err := irzstd.NewIrZstdWriter(ctx.Config.TimeZone, size, ctx.Config.Store,irStore,zstdStore)
+func newTag(tagKey string, timezone string, size int, store bool, irStore io.ReadWriter, zstdStore io.ReadWriter) (*outctx.Tag, error) {
+	writer, err := irzstd.NewIrZstdWriter(timezone, size, store, irStore, zstdStore)
 	if err != nil {
 		return nil, err
 	}
@@ -273,75 +271,8 @@ func newTag(tagKey string, size int, ctx *outctx.S3Context, irStore io.ReadWrite
 		Start: time.Now(),
 		Writer: writer,
 	}
+
 	return &tag, nil
-}
-
-func newStores(store bool,storeDir string,tagkey string,) (io.ReadWriter,io.ReadWriter, error) {
-	var irStore io.ReadWriter
-	var zstdStore io.ReadWriter
-
-	if store {
-		// Create file to store ir to disk.
-		irStoreName := fmt.Sprintf("%s.ir", tagkey)
-		irStoreDir := filepath.Join(storeDir, IrDir)
-		irFile, err := CreateFile(irStoreDir, irStoreName)
-		if err != nil {
-			return nil, nil, fmt.Errorf("error creating file: %w", err)
-		}
-		log.Printf("created file %s", irFile.Name())
-		irStore = irFile
-
-		// Create file to store zstd to disk.
-		zstdStoreName := fmt.Sprintf("%s.zst", tagkey)
-		zstdStoreDir := filepath.Join(storeDir, ZstdDir)
-		zstdFile, err := CreateFile(zstdStoreDir, zstdStoreName)
-		if err != nil {
-			return nil, nil, fmt.Errorf("error creating file: %w", err)
-		}
-		log.Printf("created file %s", zstdFile.Name())
-		zstdStore = zstdFile
-
-	} else {
-		// Store zstd directly in memory. No ir file needed since ir is immediately compressed.
-		irStore = nil
-		var membuf bytes.Buffer
-		zstdStore = &membuf
-	}
-
-	return irStore, zstdStore, nil
-}
-
-// Creates a new file to output IR. A new file is created for every Fluent Bit chunk.
-// The system timestamp is added as a suffix.
-//
-// Parameters:
-//   - path: Directory path to create to write files inside
-//   - file: File name prefix
-//
-// Returns:
-//   - f: The created file
-//   - err: Could not create directory, could not create file
-func CreateFile(path string, file string) (*os.File, error) {
-	// Make directory if does not exist.
-	err := os.MkdirAll(path, 0o751)
-	if err != nil {
-		err = fmt.Errorf("failed to create directory %s: %w", path, err)
-		return nil, err
-	}
-
-	fullFilePath := filepath.Join(path, file)
-
-	// Try to open the file exclusively. If it already exists something has gone wrong. Even if
-	// program crashed should have been deleted on startup.
-	f, err := os.OpenFile(fullFilePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o751)
-	if err != nil {
-		// Check if the error is due to the file already existing
-		if errors.Is(err, fs.ErrExist) {
-			return nil, fmt.Errorf("file %s already exists", fullFilePath)
-		}
-		return nil, fmt.Errorf("failed to create file %s: %w", fullFilePath, err)
-	}
-	return f, nil
 }
 
 func FlushZstdToS3(tag *outctx.Tag, ctx *outctx.S3Context) (error) {
@@ -364,6 +295,8 @@ func FlushZstdToS3(tag *outctx.Tag, ctx *outctx.S3Context) (error) {
 			err = fmt.Errorf("failed to upload chunk to s3, %w", err)
 			return err
 		}
+
+		tag.Index += 1
 
 		log.Printf("chunk uploaded to %s", outputLocation)
 		tag.Writer.Reset()

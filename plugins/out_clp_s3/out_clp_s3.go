@@ -52,6 +52,11 @@ func FLBPluginInit(plugin unsafe.Pointer) int {
 
 	log.Printf("[%s] Init called for id: %s", s3PluginName, outCtx.Config.Id)
 
+	err = flush.RecoverOnStart(outCtx)
+	if err != nil {
+		log.Fatalf("Failed to recover logs stored on disk: %s", err)
+	}
+
 	// Set the context for this instance so that params can be retrieved during flush.
 	output.FLBPluginSetContext(plugin, outCtx)
 	return output.FLB_OK
@@ -115,13 +120,10 @@ func FLBPluginExitCtx(ctx unsafe.Pointer) int {
 
 	log.Printf("[%s] Exit called for id: %s", s3PluginName, outCtx.Config.Id)
 
-	/*
-	err := flush.CloseAll(outCtx)
+	err := flush.GracefulExit(outCtx)
 	if err != nil {
-		log.Printf("error closing tag resources during exit")
-		return output.FLB_ERROR
+		log.Printf("Failed to exit gracefully")
 	}
-	*/
 
 	return output.FLB_OK
 }

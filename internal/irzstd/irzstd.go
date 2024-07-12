@@ -22,6 +22,8 @@ import (
 // 2 MB
 const irSizeThreshold = 2 << 20
 
+const IrDir = "ir"
+const ZstdDir = "zstd"
 
 // Converts log events into Zstd compressed IR. Effectively chains [ir.Writer] then [zstd.Encoder] in series.
 // Compressed IR output is [io.Writer] provided to [zstd.Encoder].
@@ -76,12 +78,12 @@ func NewIrZstdWriter(timezone string, size int, store bool, irStore io.ReadWrite
 }
 
 // TODO: Improve error handling for partially written bytes.
-func (w *IrZstdWriter) WriteIrZstd(logEvents []ffi.LogEvent) (int, error) {
+func (w *IrZstdWriter) WriteIrZstd(logEvents []ffi.LogEvent) (error) {
 
 	// Write log events to irWriter buffer.
 	err := writeIr(w.IrWriter, logEvents)
 	if err != nil {
-		return output.FLB_ERROR, err
+		return err
 	}
 
 	// If no disk store, skip writing to ir store.
@@ -89,16 +91,16 @@ func (w *IrZstdWriter) WriteIrZstd(logEvents []ffi.LogEvent) (int, error) {
 		// Flush irWriter buffer to zstdWriter.
 		_, err := w.IrWriter.WriteTo(w.ZstdWriter)
 		if err != nil {
-			return output.FLB_RETRY, err
+			return err
 		}
 
-		return output.FLB_OK, nil
+		return nil
 	}
 
 	// Flush irWriter buffer to ir disk store.
 	numBytes, err := w.IrWriter.WriteTo(w.IrStore)
 	if err != nil {
-		return output.FLB_RETRY, err
+		return err
 	}
 
 	// Increment total bytes written.
@@ -109,11 +111,11 @@ func (w *IrZstdWriter) WriteIrZstd(logEvents []ffi.LogEvent) (int, error) {
 	if (w.IrTotalBytes) >= irSizeThreshold {
 		err := w.FlushIrStore()
 		if err != nil {
-			return output.FLB_ERROR, fmt.Errorf("error flushing IR store: %w", err)
+			return fmt.Errorf("error flushing IR store: %w", err)
 		}
 	}
 
-	return output.FLB_OK, nil
+	return nil
 }
 
 func (w *IrZstdWriter) EndStream() error {
@@ -194,8 +196,8 @@ func writeIr(irWriter *ir.Writer, eventBuffer []ffi.LogEvent) error {
 
 func (w *IrZstdWriter) FlushIrStore() (error) {
 
-	if w.IrStore == nil {
-		return fmt.Errorf("error flush called on non-existant ir store")
+	if (w.IrStore == nil) || (w.ZstdStore == nil) {
+		return fmt.Errorf("error flush called with non-existant store")
 	}
 
 	_, err := io.Copy(w.ZstdWriter, w.IrStore)
@@ -203,7 +205,7 @@ func (w *IrZstdWriter) FlushIrStore() (error) {
 		return err
 	}
 
-	// Close zstd Frame.
+	// Terminate Zstd frame.
 	err = w.ZstdWriter.Close()
 	if err != nil {
 		return err
@@ -217,7 +219,7 @@ func (w *IrZstdWriter) FlushIrStore() (error) {
 		return fmt.Errorf("error type assertion from store to file failed")
 	}
 
-	// Reset ir Store.
+	// Reset Ir Store.
 	err = irFile.Truncate(0)
 	if err != nil {
 		return err
@@ -227,6 +229,73 @@ func (w *IrZstdWriter) FlushIrStore() (error) {
 	return nil
 }
 
+func NewStores(store bool,storeDir string,tagkey string,) (io.ReadWriter,io.ReadWriter, error) {
+	var irStore io.ReadWriter
+	var zstdStore io.ReadWriter
+
+	if store {
+		// Create file to store ir to disk.
+		irStoreName := fmt.Sprintf("%s.ir", tagkey)
+		irStoreDir := filepath.Join(storeDir, IrDir)
+		irFile, err := CreateFile(irStoreDir, irStoreName)
+		if err != nil {
+			return nil, nil, fmt.Errorf("error creating file: %w", err)
+		}
+		log.Printf("created file %s", irFile.Name())
+		irStore = irFile
+
+		// Create file to store zstd to disk.
+		zstdStoreName := fmt.Sprintf("%s.zst", tagkey)
+		zstdStoreDir := filepath.Join(storeDir, ZstdDir)
+		zstdFile, err := CreateFile(zstdStoreDir, zstdStoreName)
+		if err != nil {
+			return nil, nil, fmt.Errorf("error creating file: %w", err)
+		}
+		log.Printf("created file %s", zstdFile.Name())
+		zstdStore = zstdFile
+
+	} else {
+		// Store zstd directly in memory. No ir file needed since ir is immediately compressed.
+		irStore = nil
+		var membuf bytes.Buffer
+		zstdStore = &membuf
+	}
+
+	return irStore, zstdStore, nil
+}
+
+// Creates a new file to output IR. A new file is created for every Fluent Bit chunk.
+// The system timestamp is added as a suffix.
+//
+// Parameters:
+//   - path: Directory path to create to write files inside
+//   - file: File name prefix
+//
+// Returns:
+//   - f: The created file
+//   - err: Could not create directory, could not create file
+func CreateFile(path string, file string) (*os.File, error) {
+	// Make directory if does not exist.
+	err := os.MkdirAll(path, 0o751)
+	if err != nil {
+		err = fmt.Errorf("failed to create directory %s: %w", path, err)
+		return nil, err
+	}
+
+	fullFilePath := filepath.Join(path, file)
+
+	// Try to open the file exclusively. If it already exists something has gone wrong. Even if
+	// program crashed should have been deleted on startup.
+	f, err := os.OpenFile(fullFilePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o751)
+	if err != nil {
+		// Check if the error is due to the file already existing
+		if errors.Is(err, fs.ErrExist) {
+			return nil, fmt.Errorf("file %s already exists", fullFilePath)
+		}
+		return nil, fmt.Errorf("failed to create file %s: %w", fullFilePath, err)
+	}
+	return f, nil
+}
 
 
 
