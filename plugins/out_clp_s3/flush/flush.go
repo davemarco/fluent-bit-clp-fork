@@ -29,6 +29,7 @@ import (
 
 	"github.com/y-scope/fluent-bit-clp/internal/decoder"
 	"github.com/y-scope/fluent-bit-clp/internal/irzstd"
+	"github.com/y-scope/fluent-bit-clp/internal/file"
 	"github.com/y-scope/fluent-bit-clp/internal/outctx"
 )
 
@@ -83,24 +84,26 @@ func ToS3(data unsafe.Pointer, size int, tagKey string, ctx *outctx.S3Context) (
 		if err != nil {
 			return output.FLB_RETRY, fmt.Errorf("error creating tag: %w", err)
 		}
+
+		go uploadRoutine(tag, ctx)
+
 		ctx.Tags[tagKey] = tag
 	}
 
+	tag.Mutex.Lock()
 	err = tag.Writer.WriteIrZstd(logEvents)
 	if err != nil {
 		return output.FLB_ERROR, err
 	}
+	tag.Mutex.Unlock()
 
 	readyToUpload, err := checkUploadCriteria(tag, ctx.Config.DiskStore, ctx.Config.UploadSizeMb)
 	if err != nil {
 		return output.FLB_ERROR, fmt.Errorf("error checking upload criteria: %w", err)
 	}
 
-	if readyToUpload {
-		err := FlushZstdToS3(tag, ctx)
-		if err != nil {
-			return output.FLB_ERROR, fmt.Errorf("error flushing Zstd store to s3: %w", err)
-		}
+	if (readyToUpload) {
+		tag.UploadChannel <- true
 	}
 
 	return output.FLB_OK, nil
@@ -422,10 +425,14 @@ func newStores(
 		return nil, zstdStore, nil
 	}
 
+	// TODO: Replace os.O_TRUNC with os.O_EXCL once recovery code add in. With recovery on,
+	// code should throw error if file exists.
+	flags := os.O_RDWR|os.O_CREATE|os.O_TRUNC
+
 	// Create file for IR.
 	irFileName := fmt.Sprintf("%s.ir", tagkey)
-	irStoreDir := filepath.Join(storeDir, IrDir)
-	irFile, err := createFile(irStoreDir, irFileName)
+	irStorePath := filepath.Join(storeDir, IrDir, irFileName)
+	irFile, err := file.CreateFile(irStorePath, flags)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error creating file: %w", err)
 	}
@@ -434,8 +441,8 @@ func newStores(
 
 	// Create file for Zstd.
 	zstdFileName := fmt.Sprintf("%s.zst", tagkey)
-	zstdStoreDir := filepath.Join(storeDir, ZstdDir)
-	zstdFile, err := createFile(zstdStoreDir, zstdFileName)
+	zstdStorePath := filepath.Join(storeDir, ZstdDir,zstdFileName)
+	zstdFile, err := file.CreateFile(zstdStorePath, flags)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error creating file: %w", err)
 	}
@@ -445,30 +452,32 @@ func newStores(
 	return irStore, zstdStore, nil
 }
 
-// Creates a new file.
-//
-// Parameters:
-//   - path: Directory path
-//   - file: File name
-//
-// Returns:
-//   - f: The created file
-//   - err: Could not create directory, could not create file
-func createFile(path string, file string) (*os.File, error) {
-	// Make directory if does not exist.
-	err := os.MkdirAll(path, 0o751)
-	if err != nil {
-		err = fmt.Errorf("failed to create directory %s: %w", path, err)
-		return nil, err
-	}
 
-	fullFilePath := filepath.Join(path, file)
 
-	// TODO: Replace os.O_TRUNC with os.O_EXCL once recovery code add in. With recovery on,
-	// code should throw error if file exists.
-	f, err := os.OpenFile(fullFilePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o751)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create file %s: %w", fullFilePath, err)
+func uploadRoutine(tag *outctx.Tag, ctx *outctx.S3Context) {
+	log.Printf("Started upload thread for tag %s",tag.Key)
+	for {
+		if (ctx.Config.DiskStore) {
+			select {
+			case <-tag.UploadChannel:
+			case <-time.After(10 * time.Second):
+			}
+		} else {
+			<-tag.UploadChannel
+		}
+
+		tag.Mutex.Lock()
+		if (ctx.Config.DiskStore) {
+			zstdSize, err := irzstd.GetDiskStoreSize(tag.Writer.ZstdStore)
+			if err != nil {
+				log.Fatalf("error could not get size of disk store")
+				continue
+			}
+			if (zstdSize == 0 && tag.Writer.IrTotalBytes == 0) {
+				continue
+			}
+		}
+		FlushZstdToS3(tag, ctx)
+		tag.Mutex.Unlock()
 	}
-	return f, nil
 }

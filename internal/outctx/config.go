@@ -34,6 +34,7 @@ type S3Config struct {
 	StoreDir        string `conf:"store_dir"         validate:"omitempty,dirpath"`
 	UploadSizeMb    int    `conf:"upload_size_mb"    validate:"omitempty,gte=2,lt=1000"`
 	TimeZone        string `conf:"time_zone"         validate:"timezone"`
+	LogFile         string `conf:"log_file"          validate:"omitempty,filepath"`
 }
 
 // Generates configuration struct containing user-defined settings. In addition, sets default values
@@ -78,6 +79,7 @@ func NewS3Config(plugin unsafe.Pointer) (*S3Config, error) {
 		"store_dir":         &config.StoreDir,
 		"upload_size_mb":    &config.UploadSizeMb,
 		"time_zone":         &config.TimeZone,
+		"file_path":         &config.LogFile,
 	}
 
 	for settingName, untypedField := range pluginSettings {

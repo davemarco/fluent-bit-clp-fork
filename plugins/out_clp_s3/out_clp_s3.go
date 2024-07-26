@@ -15,6 +15,7 @@ import (
 
 	"github.com/fluent/fluent-bit-go/output"
 
+	"github.com/y-scope/fluent-bit-clp/internal/logger"
 	"github.com/y-scope/fluent-bit-clp/internal/outctx"
 	"github.com/y-scope/fluent-bit-clp/plugins/out_clp_s3/flush"
 )
@@ -50,7 +51,12 @@ func FLBPluginInit(plugin unsafe.Pointer) int {
 		log.Fatalf("Failed to initialize plugin: %s", err)
 	}
 
-	log.Printf("[%s] Init called for id: %s", s3PluginName, outCtx.Config.Id)
+	err = logger.Init(outCtx.Config.LogFile)
+	if err != nil {
+		log.Fatalf("Failed to start logger: %s", err)
+	}
+
+	logger.Log.Printf("Init called for id: %s", outCtx.Config.Id)
 
 	// Set the context for this instance so that params can be retrieved during flush.
 	output.FLBPluginSetContext(plugin, outCtx)

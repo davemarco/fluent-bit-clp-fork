@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"unsafe"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -19,6 +20,7 @@ import (
 	"github.com/aws/smithy-go"
 
 	"github.com/y-scope/fluent-bit-clp/internal/irzstd"
+	"github.com/y-scope/fluent-bit-clp/internal/logger"
 )
 
 // AWS error codes.
@@ -42,6 +44,8 @@ type S3Context struct {
 type Tag struct {
 	Key    string
 	Index  int
+	Mutex sync.Mutex
+	UploadChannel chan bool
 	Writer *irzstd.IrZstdWriter
 }
 
