@@ -169,6 +169,7 @@ func (ctx *S3Context) RecoverEventManager(
 	}
 
 	log.Printf("Starting upload listener for event manager with tag %s", tag)
+	eventManager.Listening.Store(true)
 	eventManager.WaitGroup.Add(1)
 	go eventManager.listen(ctx.Config, ctx.Uploader)
 
@@ -219,6 +220,7 @@ func (ctx *S3Context) newEventManager(
 	}
 
 	log.Printf("Starting upload listener for event manager with tag %s", tag)
+	eventManager.Listening.Store(true)
 	eventManager.WaitGroup.Add(1)
 	go eventManager.listen(ctx.Config, ctx.Uploader)
 

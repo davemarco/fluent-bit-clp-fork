@@ -41,6 +41,7 @@ type diskWriter struct {
 	irTotalBytes int
 	zstdWriter   *zstd.Encoder
 	closed       bool
+	corrupt      bool
 }
 
 // Opens a new [diskWriter] using files for IR and Zstd buffers. For use when use_disk_store
@@ -150,6 +151,10 @@ func RecoverWriter(
 //   - numEvents: Number of log events successfully written to IR writer buffer
 //   - err: Error writing IR/Zstd, error flushing buffers
 func (w *diskWriter) WriteIrZstd(logEvents []ffi.LogEvent) (int, error) {
+	if w.corrupt {
+		return 0, fmt.Errorf("writer is corrupt")
+	}
+
 	numEvents, err := writeIr(w.irWriter, logEvents)
 	if err != nil {
 		return numEvents, err
@@ -181,14 +186,20 @@ func (w *diskWriter) WriteIrZstd(logEvents []ffi.LogEvent) (int, error) {
 // Returns:
 //   - err: Error flushing/closing buffers
 func (w *diskWriter) CloseStreams() error {
+	if w.corrupt {
+		return fmt.Errorf("writer is corrupt")
+	}
+
 	// IR buffer may not be empty, so must be flushed prior to adding trailing EndOfStream byte.
 	err := w.flushIrBuffer()
 	if err != nil {
+		w.corrupt = true
 		return fmt.Errorf("error flushing IR buffer: %w", err)
 	}
 
 	_, err = w.irWriter.CloseTo(w.zstdWriter)
 	if err != nil {
+		w.corrupt = true
 		return err
 	}
 
@@ -196,11 +207,13 @@ func (w *diskWriter) CloseStreams() error {
 
 	err = w.zstdWriter.Close()
 	if err != nil {
+		w.corrupt = true
 		return err
 	}
 
 	_, err = w.zstdFile.Seek(0, io.SeekStart)
 	if err != nil {
+		w.corrupt = true
 		return err
 	}
 
@@ -215,9 +228,14 @@ func (w *diskWriter) CloseStreams() error {
 // Returns:
 //   - err: Error opening IR writer, error IR buffer not empty
 func (w *diskWriter) Reset() error {
+	if w.corrupt {
+		return fmt.Errorf("writer is corrupt")
+	}
+
 	var err error
 	w.irWriter, err = ir.NewWriterSize[ir.FourByteEncoding](w.size, w.timezone)
 	if err != nil {
+		w.corrupt = true
 		return err
 	}
 
@@ -225,16 +243,19 @@ func (w *diskWriter) Reset() error {
 	// use case to truncate a non-empty IR buffer; however, there is currently no use case
 	// so safer to throw an error.
 	if w.irTotalBytes != 0 {
+		w.corrupt = true
 		return fmt.Errorf("error IR buffer is not empty")
 	}
 
 	_, err = w.zstdFile.Seek(0, io.SeekStart)
 	if err != nil {
+		w.corrupt = true
 		return err
 	}
 
 	err = w.zstdFile.Truncate(0)
 	if err != nil {
+		w.corrupt = true
 		return err
 	}
 
@@ -321,6 +342,10 @@ func (w *diskWriter) GetZstdOutputSize() (int, error) {
 //   - empty: Boolean value that is true if buffer is empty
 //   - err: Error calling stat
 func (w *diskWriter) CheckEmpty() (bool, error) {
+	if w.corrupt {
+		return false, fmt.Errorf("writer is corrupt")
+	}
+
 	zstdFileInfo, err := w.zstdFile.Stat()
 	if err != nil {
 		return false, err

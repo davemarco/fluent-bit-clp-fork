@@ -21,6 +21,7 @@ type memoryWriter struct {
 	timezone   string
 	zstdWriter *zstd.Encoder
 	closed     bool
+	corrupt    bool
 }
 
 // Opens a new [memoryWriter] with a memory buffer for Zstd output. For use when use_disk_store is
@@ -60,6 +61,10 @@ func NewMemoryWriter(timezone string, size int) (*memoryWriter, error) {
 //   - numEvents: Number of log events successfully written to IR writer buffer
 //   - err: Error writing IR/Zstd
 func (w *memoryWriter) WriteIrZstd(logEvents []ffi.LogEvent) (int, error) {
+	if w.corrupt {
+		return 0, fmt.Errorf("writer is corrupt")
+	}
+
 	numEvents, err := writeIr(w.irWriter, logEvents)
 	if err != nil {
 		return numEvents, err
@@ -76,14 +81,22 @@ func (w *memoryWriter) WriteIrZstd(logEvents []ffi.LogEvent) (int, error) {
 // Returns:
 //   - err: Error closing buffers
 func (w *memoryWriter) CloseStreams() error {
+	if w.corrupt {
+		return fmt.Errorf("writer is corrupt")
+	}
+
 	_, err := w.irWriter.CloseTo(w.zstdWriter)
 	if err != nil {
+		w.corrupt = true
 		return err
 	}
 
 	w.irWriter = nil
 
 	err = w.zstdWriter.Close()
+	if err != nil {
+		w.corrupt = true
+	}
 
 	w.closed = true
 
@@ -96,9 +109,14 @@ func (w *memoryWriter) CloseStreams() error {
 // Returns:
 //   - err: Error opening IR writer
 func (w *memoryWriter) Reset() error {
+	if w.corrupt {
+		return fmt.Errorf("writer is corrupt")
+	}
+
 	var err error
 	w.irWriter, err = ir.NewWriterSize[ir.FourByteEncoding](w.size, w.timezone)
 	if err != nil {
+		w.corrupt = true
 		return err
 	}
 
@@ -152,6 +170,10 @@ func (w *memoryWriter) GetZstdOutputSize() (int, error) {
 //   - empty: Boolean value that is true if buffer is empty
 //   - err: nil error to comply with interface
 func (w *memoryWriter) CheckEmpty() (bool, error) {
+	if w.corrupt {
+		return false, fmt.Errorf("writer is corrupt")
+	}
+
 	w.zstdWriter.Flush()
 
 	empty := w.zstdBuffer.Len() == 0

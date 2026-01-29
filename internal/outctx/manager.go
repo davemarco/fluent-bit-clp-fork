@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -27,13 +28,12 @@ type S3EventManager struct {
 	Mutex          sync.Mutex
 	WaitGroup      sync.WaitGroup
 	UploadRequests chan bool
-	Listening      bool
+	Listening      atomic.Bool
 }
 
 // Ends listener goroutine.
 func (m *S3EventManager) StopListening() {
-
-	if !m.Listening {
+	if !m.Listening.Load() {
 		return
 	}
 
@@ -43,7 +43,6 @@ func (m *S3EventManager) StopListening() {
 	// will block until it actually terminates.
 	close(m.UploadRequests)
 	m.WaitGroup.Wait()
-	m.Listening = false
 }
 
 // Starts upload listener which can receive signals on UploadRequests channel. This function should
@@ -60,8 +59,8 @@ func (m *S3EventManager) StopListening() {
 //   - uploader: S3 uploader manager
 func (m *S3EventManager) listen(config S3Config, uploader *manager.Uploader) {
 	defer m.WaitGroup.Done()
+	defer m.Listening.Store(false)
 
-	m.Listening = true
 	if m.Writer.GetUseDiskBuffer() {
 		m.diskUploadListener(config, uploader)
 	} else {
@@ -70,7 +69,7 @@ func (m *S3EventManager) listen(config S3Config, uploader *manager.Uploader) {
 }
 
 // Immortal listener that uploads events to s3 when receives signal on UploadRequests channel or a
-// timeout is hit. Listener will sleep when inactive.
+// timeout is hit. Listener will sleep when inactive. On fatal error, listener will exit.
 //
 // Parameters:
 //   - config: Plugin configuration
@@ -89,12 +88,15 @@ func (m *S3EventManager) diskUploadListener(config S3Config, uploader *manager.U
 			log.Printf("Timeout surpassed for listener with tag %s", m.Tag)
 		}
 
-		m.diskUpload(config, uploader)
+		if err := m.diskUpload(config, uploader); err != nil {
+			log.Printf("Unrecoverable error during disk upload for tag %s: %v", m.Tag, err)
+			return
+		}
 	}
 }
 
 // Immortal listener that uploads events to s3 when receives signal on UploadRequests channel.
-// Listener will sleep when inactive.
+// Listener will sleep when inactive. On fatal error, listener will exit.
 //
 // Parameters:
 //   - config: Plugin configuration
@@ -107,64 +109,74 @@ func (m *S3EventManager) memoryUploadListener(config S3Config, uploader *manager
 			return
 		}
 		log.Printf("Listener with tag %s received upload request on channel", m.Tag)
-		m.memoryUpload(config, uploader)
+		if err := m.memoryUpload(config, uploader); err != nil {
+			log.Printf("Unrecoverable error during memory upload for tag %s: %v", m.Tag, err)
+			return
+		}
 	}
 }
 
 // Uploads to s3 after acquiring lock and validating that buffer is not empty. Mutex prevents
 // write while uploading. Must check that buffer is not empty as timeout can trigger on empty
-// buffer and send empty file to s3. Panics or logs instead of returning error.
+// buffer and send empty file to s3. Returns error on unrecoverable failure.
 //
 // Parameters:
 //   - config: Plugin configuration
 //   - uploader: S3 uploader manager
-func (m *S3EventManager) diskUpload(config S3Config, uploader *manager.Uploader) {
+//
+// Returns:
+//   - err: Unrecoverable error that requires stopping the listener
+func (m *S3EventManager) diskUpload(config S3Config, uploader *manager.Uploader) error {
 	m.Mutex.Lock()
 	defer m.Mutex.Unlock()
 
 	empty, err := m.Writer.CheckEmpty()
 	if err != nil {
-		panic(fmt.Errorf("failed to check if buffer is empty, %w", err))
+		return fmt.Errorf("failed to check if buffer is empty: %w", err)
 	}
 
 	if empty {
-		log.Printf("Did not uploads events with tag %s since buffer is empty", m.Tag)
-		return
+		log.Printf("Did not upload events with tag %s since buffer is empty", m.Tag)
+		return nil
 	}
 
-	m.toS3(config, uploader)
+	return m.toS3(config, uploader)
 }
 
 // See [diskUpload]; however, not necessary to check size of buffer since there
-// is no timeout. MemoryUpload cannot be called with empty buffer.  Panics or logs
-// instead of returning error.
+// is no timeout. MemoryUpload cannot be called with empty buffer.
 //
 // Parameters:
 //   - config: Plugin configuration
 //   - uploader: S3 uploader manager
-func (m *S3EventManager) memoryUpload(config S3Config, uploader *manager.Uploader) {
+//
+// Returns:
+//   - err: Error closing or resetting stream
+func (m *S3EventManager) memoryUpload(config S3Config, uploader *manager.Uploader) error {
 	m.Mutex.Lock()
 	defer m.Mutex.Unlock()
 
-	m.toS3(config, uploader)
+	return m.toS3(config, uploader)
 }
 
 // Sends Zstd buffer to s3 and reset writer and buffers for future uploads. Prior to upload, IR
 // buffer is flushed and IR/Zstd streams are terminated. The [S3EventManager.Index] is incremented
-// on successful upload. Logs errors with s3 request, otherwise panics instead on error. Errors
-// closing and resetting writer are difficult to recover from.
+// on successful upload. Logs errors with s3 request. Returns error on unrecoverable failure.
 //
 // Parameters:
 //   - config: Plugin configuration
 //   - uploader: S3 uploader manager
-func (m *S3EventManager) toS3(config S3Config, uploader *manager.Uploader) {
+//
+// Returns:
+//   - err: Error closing or resetting stream
+func (m *S3EventManager) toS3(config S3Config, uploader *manager.Uploader) error {
 	// In normal operation, writer GetClosed() should always return false. i.e. writer is open and
 	// the stream should be closed. However, if a s3 request fails, it is already closed.
 	// Therefore, on retry we don't want to close again.
 	if !m.Writer.GetClosed() {
 		err := m.Writer.CloseStreams()
 		if err != nil {
-			panic(fmt.Errorf("error closing irzstd stream: %w", err))
+			return fmt.Errorf("error closing irzstd stream: %w", err)
 		}
 	}
 
@@ -176,8 +188,8 @@ func (m *S3EventManager) toS3(config S3Config, uploader *manager.Uploader) {
 		uploader,
 	)
 	if err != nil {
-		log.Print(fmt.Errorf("S3 request failed for event manager with tag %s: %w", m.Tag, err))
-		return
+		log.Printf("S3 request failed for event manager with tag %s: %v", m.Tag, err)
+		return nil
 	}
 
 	m.Index += 1
@@ -186,8 +198,10 @@ func (m *S3EventManager) toS3(config S3Config, uploader *manager.Uploader) {
 
 	err = m.Writer.Reset()
 	if err != nil {
-		panic(fmt.Errorf("error resetting irzstd stream: %w", err))
+		return fmt.Errorf("error resetting irzstd stream: %w", err)
 	}
+
+	return nil
 }
 
 // Uploads log events to s3.
