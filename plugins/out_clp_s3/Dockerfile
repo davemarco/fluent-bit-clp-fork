@@ -5,13 +5,17 @@
 # [Fluent Bit Debian version]: https://github.com/fluent/fluent-bit/blob/master/dockerfiles/Dockerfile
 FROM golang:1.24-bullseye AS builder
 
+# TARGETARCH is automatically set by Docker Buildx for multi-platform builds
+ARG TARGETARCH
+
 # install task
 RUN sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /bin
 
 WORKDIR /root
 
-ENV GOOS=linux\
-    GOARCH=amd64
+ENV GOOS=linux
+ENV GOARCH=${TARGETARCH}
+ENV CGO_ENABLED=1
 
 COPY / /root/
 

@@ -1,0 +1,21 @@
+name: "release"
+
+on:
+  release:
+    types: ["published"]
+
+jobs:
+  binaries:
+    uses: "./.github/workflows/binaries.yml"
+    with:
+      release_tag: "${{ github.event.release.tag_name }}"
+    permissions:
+      contents: "write"
+
+  docker:
+    uses: "./.github/workflows/docker.yml"
+    with:
+      push: true
+    permissions:
+      contents: "read"
+      packages: "write"
