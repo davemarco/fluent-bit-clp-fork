@@ -47,7 +47,7 @@ jobs:
 
       - name: "Create release archive"
         working-directory: "plugins/out_clp_s3"
-        run: tar -czvf out_clp_s3-linux-${{ matrix.arch }}.tar.gz out_clp_s3.so out_clp_s3.h
+        run: tar -czvf out_clp_s3-linux-${{ matrix.arch }}.tar.gz out_clp_s3.so
 
       - name: "Upload to release"
         if: "${{ inputs.release_tag != '' }}"
