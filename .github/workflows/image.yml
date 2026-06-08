@@ -8,6 +8,11 @@ on:
         type: "boolean"
         default: false
   workflow_dispatch:
+    inputs:
+      push:
+        description: "Push image to registry"
+        type: "boolean"
+        default: false
 
 env:
   REGISTRY: "ghcr.io"
@@ -48,6 +53,6 @@ jobs:
           context: "."
           file: "plugins/out_clp_s3/Dockerfile"
           platforms: "linux/amd64"
-          push: "${{ inputs.push }}"
+          push: "${{ inputs.push || false }}"
           tags: "${{ steps.meta.outputs.tags }}"
           labels: "${{ steps.meta.outputs.labels }}"
