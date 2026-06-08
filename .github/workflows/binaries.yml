@@ -38,7 +38,9 @@ jobs:
               # Install Task
               curl -fsSL https://taskfile.dev/install.sh | sh -s -- -d -b /usr/local/bin
 
-              # Build plugin
+              # Build plugin (disable VCS stamping; source is a mounted volume
+              # owned by a different user, so git fails with exit 128)
+              export GOFLAGS="-buildvcs=false"
               cd plugins/out_clp_s3
               task build
             '
