@@ -12,8 +12,8 @@ jobs:
     permissions:
       contents: "write"
 
-  docker:
-    uses: "./.github/workflows/docker.yml"
+  image:
+    uses: "./.github/workflows/image.yml"
     with:
       push: true
     permissions:
