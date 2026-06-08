@@ -32,7 +32,7 @@ jobs:
               set -e
 
               # Install Go
-              curl -fsSL "https://go.dev/dl/go1.24.linux-${{ matrix.arch }}.tar.gz" | tar -C /usr/local -xz
+              curl -fsSL "https://go.dev/dl/go1.24.0.linux-${{ matrix.arch }}.tar.gz" | tar -C /usr/local -xz
               export PATH="/usr/local/go/bin:$PATH"
 
               # Install Task
